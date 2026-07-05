@@ -8,6 +8,7 @@ license = "MIT"
 repository = "https://github.com/MenkeTechnologies/zwire-host"
 homepage = "https://github.com/MenkeTechnologies/zwire-host"
 readme = "README.md"
+publish = false
 keywords = ["native-messaging", "ipc", "pty", "sysinfo", "daemon"]
 categories = ["command-line-utilities", "os"]
 
