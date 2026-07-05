@@ -122,7 +122,7 @@ fn usage() -> String {
     let space = " ".repeat(BOX_W.saturating_sub(status.chars().count()));
     let rule = "─".repeat(BOX_W);
     format!(
-        "\n{BANNER} \x1b[36m┌{rule}┐\x1b[0m\n \x1b[36m│\x1b[0m{status}{space}\x1b[36m│\x1b[0m\n \x1b[36m└{rule}┘\x1b[0m\n{HELP_BODY}\n\x1b[36m  ── SYSTEM ────────────────────────────────────────────────────\x1b[0m\n  \x1b[35mv{VERSION} \x1b[0m// \x1b[33m(c) Jacob Menke and contributors\x1b[0m\n  \x1b[35mOne pipe. One binary. The whole machine.\x1b[0m\n  \x1b[33m>>> JACK IN. ONE SOCKET. OWN YOUR MACHINE. <<<\x1b[0m\n \x1b[36m░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\x1b[0m\n"
+        "\n{BANNER} \x1b[36m┌{rule}┐\x1b[0m\n \x1b[36m│\x1b[0m{status}{space}\x1b[36m│\x1b[0m\n \x1b[36m└{rule}┘\x1b[0m\n{HELP_BODY}\n\x1b[36m  ── SYSTEM ────────────────────────────────────────────────────\x1b[0m\n  \x1b[35mv{VERSION} \x1b[0m// \x1b[33m(c) MenkeTechnologies\x1b[0m\n  \x1b[35mOne pipe. One binary. The whole machine.\x1b[0m\n  \x1b[33m>>> JACK IN. ONE SOCKET. OWN YOUR MACHINE. <<<\x1b[0m\n \x1b[36m░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\x1b[0m\n"
     )
 }
 
