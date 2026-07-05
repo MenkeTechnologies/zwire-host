@@ -324,15 +324,21 @@ impl Session {
             }
             #[cfg(feature = "sysinfo-caps")]
             "sysinfo_once" => {
-                use sysinfo::{Networks, System};
+                use sysinfo::{Disks, Networks, System};
                 let mut sys = System::new();
                 sys.refresh_cpu_usage();
                 sys.refresh_memory();
                 let nets = Networks::new_with_refreshed_list();
+                // A disk's `usage()` reports the raw counter on its first read,
+                // so a second back-to-back refresh makes the one-shot I/O delta
+                // ~0 — an honest "no rate from a single instant" rather than a
+                // lifetime total mislabelled as bytes-per-second.
+                let mut disks = Disks::new_with_refreshed_list();
+                disks.refresh(true);
                 respond(
                     out,
                     msg,
-                    json!({"ok": true, "sys": crate::sysmon::snapshot(1.0, &nets, &sys)}),
+                    json!({"ok": true, "sys": crate::sysmon::snapshot(1.0, &nets, &disks, &sys)}),
                 );
             }
 

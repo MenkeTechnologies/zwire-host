@@ -46,9 +46,17 @@ impl Drop for Monitor {
 }
 
 /// Collect one stats snapshot as a JSON object. Shared by the streamer and the
-/// one-shot `sysinfo_once` command.
-pub fn snapshot(dt: f64, nets: &sysinfo::Networks, sys: &sysinfo::System) -> Value {
-    use sysinfo::{Components, Disks, System};
+/// one-shot `sysinfo_once` command. `disks` is passed in (rather than refreshed
+/// here) so the streamer can keep it alive across ticks — `Disk::usage()`
+/// reports bytes *since the last refresh*, so a persistent, per-tick-refreshed
+/// `Disks` is what turns those deltas into a real per-second I/O rate.
+pub fn snapshot(
+    dt: f64,
+    nets: &sysinfo::Networks,
+    disks: &sysinfo::Disks,
+    sys: &sysinfo::System,
+) -> Value {
+    use sysinfo::{Components, System};
     let mut d = serde_json::Map::new();
     d.insert("cpu".into(), json!(sys.global_cpu_usage().round() as i64));
     let (mu, mt) = (sys.used_memory(), sys.total_memory());
@@ -67,7 +75,6 @@ pub fn snapshot(dt: f64, nets: &sysinfo::Networks, sys: &sysinfo::System) -> Val
     );
     d.insert("uptime".into(), json!(System::uptime()));
 
-    let disks = Disks::new_with_refreshed_list();
     if let Some(root) = disks.iter().find(|k| k.mount_point() == Path::new("/")) {
         let (t, a) = (root.total_space(), root.available_space());
         if t > 0 {
@@ -77,6 +84,20 @@ pub fn snapshot(dt: f64, nets: &sysinfo::Networks, sys: &sysinfo::System) -> Val
             );
         }
     }
+    // Disk I/O rate: sum read/written bytes since the last refresh across every
+    // disk, converted to bytes-per-second. `{r, w}` matches the Python host's
+    // `io` field so a HUD statusbar renders the same IO segment on either host.
+    let (mut ior, mut iow) = (0u64, 0u64);
+    for k in disks.iter() {
+        let u = k.usage();
+        ior += u.read_bytes;
+        iow += u.written_bytes;
+    }
+    d.insert(
+        "io".into(),
+        json!({"r": (ior as f64 / dt) as u64, "w": (iow as f64 / dt) as u64}),
+    );
+
     let (mut up, mut down) = (0u64, 0u64);
     for (_, n) in nets {
         up += n.transmitted();
@@ -112,9 +133,10 @@ pub fn snapshot(dt: f64, nets: &sysinfo::Networks, sys: &sysinfo::System) -> Val
 }
 
 fn stream(out: &Out, stop: &AtomicBool, interval: Duration, id: &str) {
-    use sysinfo::{Networks, System};
+    use sysinfo::{Disks, Networks, System};
     let mut sys = System::new();
     let mut nets = Networks::new_with_refreshed_list();
+    let mut disks = Disks::new_with_refreshed_list();
     let mut pip = public_ip();
     let mut last = Instant::now();
     let mut ticks: u64 = 0;
@@ -122,10 +144,11 @@ fn stream(out: &Out, stop: &AtomicBool, interval: Duration, id: &str) {
         sys.refresh_cpu_usage();
         sys.refresh_memory();
         nets.refresh(true);
+        disks.refresh(true);
         let dt = last.elapsed().as_secs_f64().max(0.1);
         last = Instant::now();
 
-        let mut snap = snapshot(dt, &nets, &sys);
+        let mut snap = snapshot(dt, &nets, &disks, &sys);
         if let Some(ref p) = pip {
             if let Some(obj) = snap.as_object_mut() {
                 obj.insert("pip".into(), json!(p));
@@ -174,6 +197,9 @@ fn public_ip() -> Option<String> {
         .filter(|b| !b.is_empty())
 }
 
+/// `{"p": percent, "c": on-AC-or-charging}` for the primary battery, or `None`
+/// when the machine has no battery (desktop/VM). Each OS reads its native power
+/// source: `pmset` on macOS, sysfs on Linux, `GetSystemPowerStatus` on Windows.
 #[cfg(target_os = "macos")]
 fn battery() -> Option<Value> {
     let out = std::process::Command::new("pmset")
@@ -190,7 +216,78 @@ fn battery() -> Option<Value> {
     let c = s.contains("AC Power") || s.contains("charging") || s.contains("charged");
     Some(json!({"p": pct, "c": c}))
 }
-#[cfg(not(target_os = "macos"))]
+
+/// Read the first `type == Battery` under `/sys/class/power_supply` for its
+/// `capacity` and `status`; treat a charging/full battery, or any online
+/// `Mains` adapter, as "on AC" so `c` matches the macOS semantics.
+#[cfg(target_os = "linux")]
+fn battery() -> Option<Value> {
+    use std::fs;
+    let dir = fs::read_dir("/sys/class/power_supply").ok()?;
+    let mut pct: Option<i64> = None;
+    let mut on_ac = false;
+    for entry in dir.flatten() {
+        let p = entry.path();
+        let kind = fs::read_to_string(p.join("type")).unwrap_or_default();
+        match kind.trim() {
+            "Battery" => {
+                if pct.is_none() {
+                    pct = fs::read_to_string(p.join("capacity"))
+                        .ok()
+                        .and_then(|c| c.trim().parse().ok());
+                }
+                let status = fs::read_to_string(p.join("status")).unwrap_or_default();
+                if matches!(status.trim(), "Charging" | "Full") {
+                    on_ac = true;
+                }
+            }
+            "Mains" => {
+                if fs::read_to_string(p.join("online")).is_ok_and(|s| s.trim() == "1") {
+                    on_ac = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(json!({"p": pct?, "c": on_ac}))
+}
+
+/// `GetSystemPowerStatus` (kernel32) fills a `SYSTEM_POWER_STATUS`; `BatteryFlag`
+/// bit 7 (128) means "no system battery", and 255 percent means "unknown".
+#[cfg(target_os = "windows")]
+fn battery() -> Option<Value> {
+    #[repr(C)]
+    struct SystemPowerStatus {
+        ac_line_status: u8,
+        battery_flag: u8,
+        battery_life_percent: u8,
+        system_status_flag: u8,
+        battery_life_time: u32,
+        battery_full_life_time: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetSystemPowerStatus(status: *mut SystemPowerStatus) -> i32;
+    }
+    let mut s = SystemPowerStatus {
+        ac_line_status: 0,
+        battery_flag: 0,
+        battery_life_percent: 0,
+        system_status_flag: 0,
+        battery_life_time: 0,
+        battery_full_life_time: 0,
+    };
+    // SAFETY: `GetSystemPowerStatus` only writes the struct we hand it.
+    if unsafe { GetSystemPowerStatus(&mut s) } == 0 {
+        return None;
+    }
+    if s.battery_flag == 128 || s.battery_life_percent == 255 {
+        return None; // no battery, or percent unknown
+    }
+    Some(json!({"p": s.battery_life_percent as i64, "c": s.ac_line_status == 1}))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn battery() -> Option<Value> {
     None
 }

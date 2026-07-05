@@ -357,9 +357,14 @@ fn sysinfo_stream_has_core_fields() {
     assert_eq!(ack["streaming"], json!(true), "ack: {ack}");
     let m = nm_recv(&mut so).expect("a sys frame");
     let sys = &m["sys"];
-    for k in ["cpu", "mem", "uptime", "load"] {
+    for k in ["cpu", "mem", "uptime", "load", "io"] {
         assert!(!sys[k].is_null(), "missing {k}: {m}");
     }
+    // The I/O segment is a `{r, w}` bytes-per-second pair on every platform.
+    assert!(
+        sys["io"]["r"].is_u64() && sys["io"]["w"].is_u64(),
+        "io shape: {m}"
+    );
     let _ = child.kill();
     let _ = child.wait();
 }
