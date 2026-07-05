@@ -10,6 +10,7 @@
 [![CI](https://github.com/MenkeTechnologies/zwire-host/actions/workflows/ci.yml/badge.svg)](https://github.com/MenkeTechnologies/zwire-host/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-05d9e8?style=flat-square)](https://github.com/MenkeTechnologies/zwire-host)
+[![docs](https://img.shields.io/badge/docs-HUD-ff2e97?style=flat-square)](https://menketechnologies.github.io/zwire-host/)
 
 ### `[UNIVERSAL LOCAL HOST // SYSINFO · FS · EXEC · PTY · KV · OS]`
 
