@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.3.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build zwire-host
+        run: cargo build --release --locked --bin zwire-host --target ${{ matrix.target }}
+
+      - name: Package tarball
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          strip zwire-host 2>/dev/null || true
+          tar czf ../../../zwire-host-${{ github.ref_name }}-${{ matrix.target }}.tar.gz zwire-host
+          cd ../../..
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: zwire-host-${{ matrix.target }}
+          path: zwire-host-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            artifacts/*.tar.gz
+
+  homebrew:
+    name: Update Homebrew tap
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute SHA256 sums
+        id: sha
+        shell: bash
+        run: |
+          for f in artifacts/*.tar.gz; do
+            base=$(basename "$f")
+            sum=$(sha256sum "$f" | awk '{print $1}')
+            # zwire-host-vX.Y.Z-<target>.tar.gz → <target> with dashes→underscores
+            key=$(echo "$base" | sed 's/zwire-host-v[^-]*-//; s/\.tar\.gz//; s/-/_/g')
+            echo "${key}=${sum}" >> "$GITHUB_OUTPUT"
+          done
+
+      - uses: actions/checkout@v6
+        with:
+          repository: MenkeTechnologies/homebrew-menketech
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Update zwire-host formula
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+          SHA_ARM_MACOS: ${{ steps.sha.outputs.aarch64_apple_darwin }}
+          SHA_X86_MACOS: ${{ steps.sha.outputs.x86_64_apple_darwin }}
+          SHA_X86_LINUX: ${{ steps.sha.outputs.x86_64_unknown_linux_gnu }}
+          SHA_ARM_LINUX: ${{ steps.sha.outputs.aarch64_unknown_linux_gnu }}
+        run: |
+          set -eu
+          V="${VERSION#v}"
+          BASE="https://github.com/MenkeTechnologies/zwire-host/releases/download/v${V}"
+          # Emit an on_arm / on_intel block when its SHA built successfully.
+          emit() { local guard="$1" arch="$2" sha="$3"; [ -n "$sha" ] || return 0; printf '    %s do\n      url "%s/zwire-host-v%s-%s.tar.gz"\n      sha256 "%s"\n    end\n' "$guard" "$BASE" "$V" "$arch" "$sha"; }
+          mac_blocks=$( { emit on_arm aarch64-apple-darwin "$SHA_ARM_MACOS"; emit on_intel x86_64-apple-darwin "$SHA_X86_MACOS"; } )
+          linux_blocks=$( { emit on_intel x86_64-unknown-linux-gnu "$SHA_X86_LINUX"; emit on_arm aarch64-unknown-linux-gnu "$SHA_ARM_LINUX"; } )
+          {
+            printf 'class ZwireHost < Formula\n'
+            printf '  desc "Local IPC host: system stats, filesystem, exec, PTY and kv store"\n'
+            printf '  homepage "https://github.com/MenkeTechnologies/zwire-host"\n'
+            printf '  license "MIT"\n'
+            printf '  version "%s"\n\n' "$V"
+            if [ -n "$mac_blocks" ]; then
+              printf '  on_macos do\n%s\n  end\n\n' "$mac_blocks"
+            fi
+            if [ -n "$linux_blocks" ]; then
+              printf '  on_linux do\n%s\n  end\n\n' "$linux_blocks"
+            fi
+            printf '  def install\n'
+            printf '    bin.install "zwire-host"\n'
+            printf '  end\n\n'
+            printf '  test do\n'
+            printf '    assert_match "zwire-host", shell_output("#{bin}/zwire-host --version")\n'
+            printf '  end\n'
+            printf 'end\n'
+          } > tap/Formula/zwire-host.rb
+
+      - name: Sync README formula-count badge
+        shell: bash
+        run: |
+          cd tap
+          count=$(ls Formula/*.rb | wc -l | tr -d ' ')
+          sed -i "s/formulas-[0-9]*/formulas-${count}/g" README.md || true
+
+      - name: Push formula update
+        run: |
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/zwire-host.rb README.md
+          if git diff --cached --quiet; then
+            echo "no changes — formula already up to date"
+            exit 0
+          fi
+          git commit -m "zwire-host: bump to ${{ github.ref_name }}"
+          git push
