@@ -99,7 +99,7 @@ multiplex many in-flight requests, streams, and terminals over one connection.
 | Message | Reply / effect |
 |---|---|
 | `{"cmd":"sysinfo_once"}` | one `{sys:{…}}` snapshot. |
-| `{"cmd":"sysinfo_start","interval_ms":2000}` | **stream** `{sys:{…}}` every interval — cpu · mem · swap · disk · net rate · load · uptime · battery · temp · host · LAN/WAN ip. |
+| `{"cmd":"sysinfo_start","interval_ms":2000}` | **stream** `{sys:{…}}` every interval — cpu · mem · swap · disk · net rate · disk I/O rate · load · uptime · battery · temp · host · LAN/WAN ip. |
 | `{"cmd":"sysinfo_stop"}` | stop the stream. |
 
 **Filesystem** (paths accept a leading `~`)
@@ -267,8 +267,9 @@ cargo test                     # exercises the protocol over both transports
 **macOS · Linux · Windows**. Both transports work on all three: native messaging
 everywhere, and the `serve`/`call` daemon over Unix domain sockets on macOS/Linux
 and named pipes on Windows (via `interprocess`, a Windows-only dependency).
-Battery reporting is macOS-only (via `pmset`) until a native reader is added for
-other platforms.
+Battery reporting is native on every platform: `pmset` on macOS,
+`/sys/class/power_supply` on Linux, and `GetSystemPowerStatus` on Windows —
+absent on machines with no battery (desktops, VMs), where the segment is omitted.
 
 CI runs the four canonical polish gates on Ubuntu + macOS + Windows:
 
