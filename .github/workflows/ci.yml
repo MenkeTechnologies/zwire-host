@@ -25,7 +25,7 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps
-      - name: cargo build --release
+      - name: cargo build --release --locked
         run: cargo build --release --locked --verbose
       - name: cargo test
         run: cargo test --verbose
