@@ -25,10 +25,13 @@ also runs as a **Unix-socket daemon speaking newline-delimited JSON**, the one
 protocol every tool already has.
 
 It streams live **system stats** (`sysinfo`), runs **PTY terminals**
-(`portable-pty`), crawls the **filesystem**, **execs** commands, keeps a
-per-app **key/value store**, and does **clipboard / notify / open**. Every
-capability is reachable over every transport, and the whole thing is also a
-**Rust library** so sibling hosts (e.g. `zpwrchrome-host`) can embed it.
+(`portable-pty`), crawls and **watches/tails the filesystem**, **execs**
+commands, runs **background jobs** that notify on completion, lists/kills
+**processes**, brokers a **pub/sub event bus** that **federates across a mesh of
+peered hosts**, keeps a per-app **key/value store**, and does
+**clipboard / notify / open**. Every capability is reachable over every
+transport, and the whole thing is also a **Rust library** so sibling hosts (e.g.
+`zpwrchrome-host`) can embed it.
 
 ### [`zwire`](https://github.com/MenkeTechnologies/zwire) &middot; [`zpwrchrome`](https://github.com/MenkeTechnologies/zpwrchrome) &middot; [`strykelang`](https://github.com/MenkeTechnologies/strykelang)
 
@@ -108,6 +111,14 @@ multiplex many in-flight requests, streams, and terminals over one connection.
 | `{"cmd":"fs_walk","path":…,"depth"?,"ext"?,"dirs_only"?,"contains"?}` | **recursive crawl** → `{count,truncated,entries:[{path,name,dir,size}]}`. |
 | `{"cmd":"fs_stat" / "fs_mkdir" / "fs_rm","path":…}` | stat / mkdir -p / remove (`recursive` for dirs). |
 
+**File watching** (streaming observers, keyed by `id`)
+
+| Message | Reply / effect |
+|---|---|
+| `{"cmd":"fs_watch","id"?,"path":…,"recursive"?,"interval_ms"?}` | **stream** `{"ev":"fs","kind":"created\|modified\|removed","path":…}` on change. |
+| `{"cmd":"fs_tail","id"?,"path":…,"from"?:"start"}` | **stream** `{"ev":"line","data":…}` as lines are appended (`tail -f`; survives rotation). |
+| `{"cmd":"watch_stop","id"?}` / `{"cmd":"watch_list"}` | stop an observer / list active ones. |
+
 **Exec & OS**
 
 | Message | Reply / effect |
@@ -116,6 +127,59 @@ multiplex many in-flight requests, streams, and terminals over one connection.
 | `{"cmd":"open","target":…}` | open a path/URL with the OS default handler. |
 | `{"cmd":"clipboard_get"}` / `{"cmd":"clipboard_set","text":…}` | read / write the clipboard. |
 | `{"cmd":"notify","title":…,"body":…}` | desktop notification. |
+
+**Background jobs** (long-running commands; run in the daemon, survive the connection)
+
+| Message | Reply / effect |
+|---|---|
+| `{"cmd":"job_start","program":…,"args":[…],"label"?,"notify"?}` | spawn a background job → `{ok,job:<id>}` immediately; fires a desktop notification on completion (`notify`, default true). |
+| `{"cmd":"job_list"}` | non-destructive status of every job → `[{id,label,running,code}]`. |
+| `{"cmd":"job_result","id":N}` | fetch+remove one finished job → `{code,stdout,stderr}` (base64). |
+| `{"cmd":"job_poll"}` | drain **all** finished jobs at once. |
+
+**Process tools**
+
+| Message | Reply / effect |
+|---|---|
+| `{"cmd":"ps","filter"?,"limit"?}` | processes by memory → `[{pid,name,mem,cpu}]`. |
+| `{"cmd":"kill","pid":N,"signal"?}` | signal a process (`term` default, or `kill`). |
+| `{"cmd":"which","program":…}` | resolve a program to its `$PATH` location → `{path}`. |
+
+**Pub/sub event bus** (the host as a coordination hub across apps)
+
+| Message | Reply / effect |
+|---|---|
+| `{"cmd":"sub","topic":…}` | subscribe this connection; thereafter receive `{"ev":"pub","topic":…,"data":…}` frames. |
+| `{"cmd":"unsub","topic":…}` | stop receiving a topic. |
+| `{"cmd":"pub","topic":…,"data":…}` | fan a message out to every subscriber → `{ok,delivered:N}`. |
+
+The daemon itself publishes on `scheme` / `ui` whenever those change, so a
+subscribed app (a HUD, an editor) gets **live theme sync** without polling.
+
+**Host-to-host peering** (a mesh of daemons across machines)
+
+Run daemons with TCP peering and the bus **federates across machines** — a
+publish (or a `scheme`/`ui` change) on one host reaches subscribers on every
+peer — and you can run a request on another host:
+
+```sh
+# machine A: listen for peers
+zwire-host serve --tcp 0.0.0.0:7420 --token SECRET --name laptop
+# machine B: listen, and dial A
+zwire-host serve --tcp 0.0.0.0:7420 --token SECRET --name desktop --peer A.local:7420
+```
+
+| Message | Reply / effect |
+|---|---|
+| `{"cmd":"peers"}` | `{self, peers:[…]}` — connected peers. |
+| `{"cmd":"peer_connect","addr":"host:port"}` | dial a new peer at runtime. |
+| `{"cmd":"remote","peer":"host:port","request":{…}}` | run a request on another host → `{reply:…}`. |
+
+Inbound TCP is gated by a shared `--token` (or `$ZWIRE_HOST_TOKEN`): a connection
+must `auth` / `peer_hello` with it before anything privileged. Local Unix-socket
+clients are trusted and never need it. Federation is single-hop (a forwarded
+event is delivered locally but not re-forwarded), which covers star and
+fully-meshed topologies without loops.
 
 **PTY terminals** (multiplexed by `id`)
 

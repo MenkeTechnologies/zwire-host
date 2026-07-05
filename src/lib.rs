@@ -20,15 +20,23 @@
 //!
 //! [`zwire`]: https://github.com/MenkeTechnologies/zwire
 pub mod api;
+pub mod bus;
 pub mod exec;
 pub mod fsops;
+pub mod jobs;
 pub mod osops;
+pub mod peer;
+#[cfg(feature = "sysinfo-caps")]
+pub mod procs;
 pub mod proto;
+#[cfg(feature = "pty")]
 pub mod pty;
 pub mod session;
 pub mod store;
+#[cfg(feature = "sysinfo-caps")]
 pub mod sysmon;
 pub mod transport;
+pub mod watch;
 
 // Re-export the handful of types a dependent binary needs to embed the host.
 // This lets sibling hosts (e.g. `zpwrchrome-host`) pull this crate in and reuse
@@ -51,7 +59,7 @@ pub mod transport;
 // sess.handle(&out, &serde_json::json!({"cmd": "hostinfo"}));
 // ```
 pub use proto::{Framing, Out, Peer};
-pub use session::{Session, CAPS};
+pub use session::{caps, Session};
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -106,6 +114,10 @@ OPTIONS:
     --socket <path>   override the socket path (default: $ZWIRE_HOST_SOCK or
                       $XDG_RUNTIME_DIR/zwire-host.sock or ~/.zwire/host.sock)
     --stream, -f      relay every reply frame instead of just the first
+    --tcp <addr>      (serve) also listen for peers/remote clients on TCP
+    --token <tok>     (serve) shared secret required of inbound TCP ($ZWIRE_HOST_TOKEN)
+    --name <name>     (serve) this host's advertised peer name (default: hostname)
+    --peer <addr>     (serve) dial a peer and keep it linked; repeatable
 
 Examples:
     zwire-host serve &
@@ -113,6 +125,7 @@ Examples:
     zwire-host call '{\"cmd\":\"fs_walk\",\"path\":\"~/src\",\"ext\":\"rs\"}'
     echo '{\"cmd\":\"exec\",\"program\":\"git\",\"args\":[\"status\"]}' | zwire-host call
     zwire-host call --stream '{\"cmd\":\"sysinfo_start\"}'
+    zwire-host serve --tcp 0.0.0.0:7420 --token SECRET --peer other.local:7420
 ";
 
 /// Entry point: interpret `args` (everything after `argv[0]`) and run the chosen
@@ -120,9 +133,13 @@ Examples:
 /// mode, because Chrome launches the host with extension-origin arguments we
 /// must ignore.
 pub fn run(args: Vec<String>) {
-    // Pull optional flags (`--socket <path>`, `--stream`) out of the arg list.
+    // Pull optional flags out of the arg list.
     let mut socket = default_socket();
     let mut follow = false;
+    let mut tcp: Option<String> = None;
+    let mut token: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut peers: Vec<String> = Vec::new();
     let mut positional: Vec<String> = Vec::new();
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -133,12 +150,26 @@ pub fn run(args: Vec<String>) {
                 }
             }
             "--stream" | "--follow" | "-f" => follow = true,
+            "--tcp" => tcp = it.next(),
+            "--token" => token = it.next(),
+            "--name" => name = it.next(),
+            "--peer" => {
+                if let Some(p) = it.next() {
+                    peers.push(p);
+                }
+            }
             _ => positional.push(a),
         }
     }
 
     match positional.first().map(String::as_str) {
-        Some("serve") => transport::serve(&socket),
+        Some("serve") => transport::serve(transport::ServeConfig {
+            socket,
+            tcp,
+            token,
+            name,
+            peers,
+        }),
         Some("call") => {
             let rest = positional[1..].join(" ");
             let request = if rest.trim().is_empty() {

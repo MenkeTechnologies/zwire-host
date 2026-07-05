@@ -150,25 +150,49 @@ fn applescript_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// The route-to-the-internet local IP (no packets are actually sent). Lives
+/// here (always compiled) so it's available with or without the sysinfo caps.
+pub fn local_ip() -> Option<String> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("8.8.8.8:80").ok()?;
+    Some(s.local_addr().ok()?.ip().to_string())
+}
+
+/// This host's short name, from `sysinfo` when compiled in, else the environment.
+pub fn hostname() -> Option<String> {
+    #[cfg(feature = "sysinfo-caps")]
+    let h = sysinfo::System::host_name();
+    #[cfg(not(feature = "sysinfo-caps"))]
+    let h = std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::env::var("COMPUTERNAME").ok());
+    h.map(|h| h.split('.').next().unwrap_or(&h).to_string())
+}
+
 /* ---- one-shot machine facts ---- */
 fn hostinfo() -> Value {
-    use sysinfo::System;
     let env = |k: &str| std::env::var(k).ok();
-    json!({
+    #[cfg_attr(not(feature = "sysinfo-caps"), allow(unused_mut))]
+    let mut v = json!({
         "ok": true,
         "host_version": crate::VERSION,
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "family": std::env::consts::FAMILY,
-        "hostname": System::host_name(),
-        "kernel": System::kernel_version(),
-        "os_version": System::long_os_version(),
+        "hostname": hostname(),
         "user": env("USER").or_else(|| env("USERNAME")),
         "home": env("HOME").or_else(|| env("USERPROFILE")),
         "shell": env("SHELL"),
         "cpus": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
-        "mem_total": System::new_all().total_memory(),
-        "lan_ip": crate::sysmon::local_ip(),
+        "lan_ip": local_ip(),
         "pid": std::process::id(),
-    })
+    });
+    #[cfg(feature = "sysinfo-caps")]
+    if let Some(obj) = v.as_object_mut() {
+        use sysinfo::System;
+        obj.insert("kernel".into(), json!(System::kernel_version()));
+        obj.insert("os_version".into(), json!(System::long_os_version()));
+        obj.insert("mem_total".into(), json!(System::new_all().total_memory()));
+    }
+    v
 }
