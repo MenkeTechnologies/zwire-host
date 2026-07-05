@@ -2,7 +2,7 @@
 name = "zwire-host"
 version = "0.2.0"
 edition = "2021"
-description = "Universal local host: system stats, filesystem, exec, PTY, kv store & OS integration — reachable from Chrome (native messaging) and from tmux/emacs/plugins/any language over a Unix-socket JSON daemon. Self-contained single binary, no Python."
+description = "Universal local host: system stats, filesystem, exec, PTY & kv store, reachable from Chrome native-messaging or a Unix-socket JSON daemon"
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/zwire-host"
