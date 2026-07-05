@@ -158,12 +158,7 @@ fn round2(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
 }
 
-/// The route-to-the-internet local IP (no packets are actually sent).
-pub fn local_ip() -> Option<String> {
-    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    s.connect("8.8.8.8:80").ok()?;
-    Some(s.local_addr().ok()?.ip().to_string())
-}
+use crate::osops::local_ip;
 
 fn public_ip() -> Option<String> {
     use std::io::{Read, Write};

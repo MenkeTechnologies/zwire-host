@@ -171,6 +171,181 @@ fn exec_runs_a_program() {
 }
 
 #[test]
+fn background_job_runs_and_collects() {
+    use base64::Engine;
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+
+    // `notify: false` so the test doesn't fire a real desktop notification.
+    #[cfg(windows)]
+    let start = json!({"cmd":"job_start","program":"cmd","args":["/C","echo","jobbed"],"notify":false,"label":"t"});
+    #[cfg(not(windows))]
+    let start =
+        json!({"cmd":"job_start","program":"echo","args":["jobbed"],"notify":false,"label":"t"});
+
+    nm_send(&mut si, &start);
+    let ack = nm_recv(&mut so).unwrap();
+    assert_eq!(ack["ok"], json!(true), "start ack: {ack}");
+    let id = ack["job"].as_u64().expect("a job id");
+
+    // Poll until the finished job drains.
+    let mut done = None;
+    for _ in 0..60 {
+        nm_send(&mut si, &json!({"cmd": "job_poll"}));
+        let poll = nm_recv(&mut so).unwrap();
+        if let Some(j) = poll["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["id"].as_u64() == Some(id))
+        {
+            done = Some(j.clone());
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let job = done.expect("job never completed");
+    assert_eq!(job["code"], json!(0), "job result: {job}");
+    let out = base64::engine::general_purpose::STANDARD
+        .decode(job["stdout"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(String::from_utf8(out).unwrap().trim(), "jobbed");
+
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn pubsub_delivers_to_subscribers() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+
+    nm_send(&mut si, &json!({"cmd": "sub", "topic": "scheme"}));
+    assert_eq!(nm_recv(&mut so).unwrap()["ok"], json!(true));
+
+    nm_send(
+        &mut si,
+        &json!({"cmd": "pub", "topic": "scheme", "data": {"scheme": "matrix"}}),
+    );
+    // The event frame is pushed before the publish ack, on the same connection.
+    let ev = nm_recv(&mut so).unwrap();
+    assert_eq!(ev["ev"], json!("pub"), "event frame: {ev}");
+    assert_eq!(ev["topic"], json!("scheme"));
+    assert_eq!(ev["data"]["scheme"], json!("matrix"));
+    let ack = nm_recv(&mut so).unwrap();
+    assert_eq!(ack["delivered"], json!(1), "ack: {ack}");
+
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn procs_ps_and_which() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+
+    nm_send(&mut si, &json!({"cmd": "ps", "limit": 5}));
+    let ps = nm_recv(&mut so).unwrap();
+    let list = ps["procs"].as_array().expect("procs array");
+    assert!(!list.is_empty(), "ps returned processes: {ps}");
+    assert!(list[0]["pid"].is_number() && list[0]["name"].is_string());
+
+    #[cfg(windows)]
+    let shell = "cmd";
+    #[cfg(not(windows))]
+    let shell = "sh";
+    nm_send(&mut si, &json!({"cmd": "which", "program": shell}));
+    let w = nm_recv(&mut so).unwrap();
+    assert!(w["path"].is_string(), "which {shell} -> {w}");
+
+    nm_send(
+        &mut si,
+        &json!({"cmd": "which", "program": "definitely-not-a-real-binary-xyz"}),
+    );
+    assert!(nm_recv(&mut so).unwrap()["path"].is_null());
+
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn fs_tail_streams_appended_lines() {
+    let home = temp_home();
+    let f = home.join("log.txt");
+    std::fs::write(&f, "alpha\n").unwrap();
+
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+
+    nm_send(
+        &mut si,
+        &json!({"cmd":"fs_tail","path": f, "from":"start","interval_ms":50}),
+    );
+
+    // Read frames until we see the replayed first line (skipping the ack).
+    let mut saw_alpha = false;
+    for _ in 0..10 {
+        let m = nm_recv(&mut so).unwrap();
+        if m["ev"] == json!("line") && m["data"] == json!("alpha") {
+            saw_alpha = true;
+            break;
+        }
+    }
+    assert!(saw_alpha, "tail replayed the existing line");
+
+    // Append and expect it to stream through.
+    {
+        use std::io::Write;
+        let mut fh = std::fs::OpenOptions::new().append(true).open(&f).unwrap();
+        fh.write_all(b"beta\n").unwrap();
+    }
+    let mut saw_beta = false;
+    for _ in 0..10 {
+        let m = nm_recv(&mut so).unwrap();
+        if m["ev"] == json!("line") && m["data"] == json!("beta") {
+            saw_beta = true;
+            break;
+        }
+    }
+    assert!(saw_beta, "tail streamed the appended line");
+
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn peer_commands_present() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+
+    nm_send(&mut si, &json!({"cmd": "peers"}));
+    let peers = nm_recv(&mut so).unwrap();
+    assert_eq!(peers["ok"], json!(true));
+    assert!(peers["self"].is_string(), "self name: {peers}");
+    assert_eq!(peers["peers"], json!([]), "no peers yet: {peers}");
+
+    // hello advertises the peer capability.
+    nm_send(&mut si, &json!({"cmd": "hello"}));
+    let caps = nm_recv(&mut so).unwrap();
+    assert!(caps["caps"].as_array().unwrap().iter().any(|c| c == "peer"));
+
+    nm_send(&mut si, &json!({"cmd": "peer_connect"}));
+    assert_eq!(nm_recv(&mut so).unwrap()["ok"], json!(false));
+
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
 fn sysinfo_stream_has_core_fields() {
     let home = temp_home();
     let mut child = spawn_stdio(&home);

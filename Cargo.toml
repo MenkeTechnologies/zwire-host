@@ -1,6 +1,6 @@
 [package]
 name = "zwire-host"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Universal local host: system stats, filesystem, exec, PTY & kv store, reachable from Chrome native-messaging or a Unix-socket JSON daemon"
 authors = ["MenkeTechnologies"]
@@ -27,11 +27,22 @@ strip = true
 codegen-units = 1
 panic = "abort"
 
+[features]
+# The binary/daemon wants everything (default). Embedders that only need the
+# light capabilities — filesystem crawl, exec, kv, bus, jobs, watch, via
+# `zwire_host::api` — can set `default-features = false` to drop the heavy
+# `sysinfo` and `portable-pty` dependencies entirely.
+default = ["sysinfo-caps", "pty"]
+# Live system stats (`sysinfo_*`), `ps`/`kill`, and sysinfo-derived host facts.
+sysinfo-caps = ["dep:sysinfo"]
+# Multiplexed PTY terminals (`pty_*`).
+pty = ["dep:portable-pty"]
+
 [dependencies]
 serde_json = "1"
-sysinfo = "0.33"
-portable-pty = "0.9.0"
 base64 = "0.22"
+sysinfo = { version = "0.33", optional = true }
+portable-pty = { version = "0.9.0", optional = true }
 
 # The socket daemon uses native local IPC per platform: std Unix domain sockets
 # on macOS/Linux (no dep), and named pipes via `interprocess` on Windows.
