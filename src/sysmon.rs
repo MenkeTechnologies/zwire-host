@@ -241,10 +241,8 @@ fn battery() -> Option<Value> {
                     on_ac = true;
                 }
             }
-            "Mains" => {
-                if fs::read_to_string(p.join("online")).is_ok_and(|s| s.trim() == "1") {
-                    on_ac = true;
-                }
+            "Mains" if fs::read_to_string(p.join("online")).is_ok_and(|s| s.trim() == "1") => {
+                on_ac = true;
             }
             _ => {}
         }
