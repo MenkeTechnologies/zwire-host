@@ -1,0 +1,32 @@
+[package]
+name = "zwire-host"
+version = "0.1.0"
+edition = "2021"
+description = "zwire native-messaging host: scheme bridge + system stats + PTY terminal. Self-contained single binary, cross-platform — no Python."
+authors = ["MenkeTechnologies"]
+license = "MIT"
+repository = "https://github.com/MenkeTechnologies/zwire-host"
+homepage = "https://github.com/MenkeTechnologies/zwire-host"
+readme = "README.md"
+keywords = ["native-messaging", "chrome-extension", "pty", "sysinfo", "terminal"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "zwire-host"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
+
+[dependencies]
+serde_json = "1"
+sysinfo = "0.33"
+portable-pty = "0.9.0"
+base64 = "0.22"
+
+[dev-dependencies]
+serde_json = "1"
