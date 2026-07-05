@@ -1,15 +1,19 @@
 [package]
 name = "zwire-host"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "zwire native-messaging host: scheme bridge + system stats + PTY terminal. Self-contained single binary, cross-platform — no Python."
+description = "Universal local host: system stats, filesystem, exec, PTY, kv store & OS integration — reachable from Chrome (native messaging) and from tmux/emacs/plugins/any language over a Unix-socket JSON daemon. Self-contained single binary, no Python."
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/zwire-host"
 homepage = "https://github.com/MenkeTechnologies/zwire-host"
 readme = "README.md"
-keywords = ["native-messaging", "chrome-extension", "pty", "sysinfo", "terminal"]
-categories = ["command-line-utilities"]
+keywords = ["native-messaging", "ipc", "pty", "sysinfo", "daemon"]
+categories = ["command-line-utilities", "os"]
+
+[lib]
+name = "zwire_host"
+path = "src/lib.rs"
 
 [[bin]]
 name = "zwire-host"
@@ -27,6 +31,11 @@ serde_json = "1"
 sysinfo = "0.33"
 portable-pty = "0.9.0"
 base64 = "0.22"
+
+# The socket daemon uses native local IPC per platform: std Unix domain sockets
+# on macOS/Linux (no dep), and named pipes via `interprocess` on Windows.
+[target.'cfg(windows)'.dependencies]
+interprocess = "2"
 
 [dev-dependencies]
 serde_json = "1"
