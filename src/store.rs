@@ -6,6 +6,7 @@
 //!   * macOS   `~/Library/Application Support/zwire`
 //!   * Windows `%APPDATA%\zwire`
 //!   * other   `${XDG_CONFIG_HOME:-~/.config}/zwire`
+//!
 //! `$ZWIRE_STATE` overrides the whole path (same contract as the launcher).
 //!
 //! Two layers live here:

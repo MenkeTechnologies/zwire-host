@@ -135,7 +135,10 @@ fn kv_roundtrip_and_merge() {
     assert_eq!(nm_recv(&mut so).unwrap()["keys"], json!(["cfg"]));
 
     // The store must live under the app's own dir, isolated from zwire's.
-    assert!(app_state_dir(&home, "myapp").join("kv").join("cfg.json").exists());
+    assert!(app_state_dir(&home, "myapp")
+        .join("kv")
+        .join("cfg.json")
+        .exists());
     drop(si);
     let _ = child.wait();
 }
