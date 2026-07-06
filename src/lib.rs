@@ -70,7 +70,12 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Where the socket daemon listens by default. `$ZWIRE_HOST_SOCK` overrides on
 /// every platform. Otherwise:
 ///   * Windows — a per-user named pipe `\\.\pipe\zwire-host-<user>`.
-///   * Unix — `$XDG_RUNTIME_DIR/zwire-host.sock`, else `~/.zwire/host.sock`.
+///   * Unix — a *runtime* dir, never the persistent state dir: Linux
+///     `$XDG_RUNTIME_DIR/zwire-host.sock`, macOS `$TMPDIR/zwire-host.sock`
+///     (the per-user `/var/folders/…/T`, mode 0700), else `/tmp`.
+///
+/// A socket is ephemeral runtime state, so it deliberately does not live under
+/// the app-data/state dir the scheme + kv files use.
 ///
 /// On Windows the returned path's *leaf* is used as the pipe's namespaced name;
 /// the directory portion is ignored.
@@ -90,12 +95,29 @@ pub fn default_socket() -> PathBuf {
     }
     #[cfg(not(windows))]
     {
+        // Linux: the XDG runtime dir (/run/user/<uid>, mode 0700).
         if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR") {
             if !rt.is_empty() {
                 return PathBuf::from(rt).join("zwire-host.sock");
             }
         }
-        store::app_dir("zwire").join("host.sock")
+        // macOS: TMPDIR is the per-user Darwin temp dir (/var/folders/…/T, mode
+        // 0700) — the moral equivalent of XDG_RUNTIME_DIR, and short enough to
+        // stay under the 104-byte sun_path limit.
+        if let Ok(tmp) = std::env::var("TMPDIR") {
+            if !tmp.is_empty() {
+                return PathBuf::from(tmp).join("zwire-host.sock");
+            }
+        }
+        // Last resort: a per-user name in the world-shared /tmp. The daemon binds
+        // 0600 and clears a stale file first, so a foreign owner just fails bind.
+        let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+        let safe: String = user
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+            .collect();
+        let user = if safe.is_empty() { "user".into() } else { safe };
+        PathBuf::from("/tmp").join(format!("zwire-host-{user}.sock"))
     }
 }
 
@@ -111,7 +133,7 @@ const BANNER: &str = concat!(
 
 /// Static body of the `--help` screen (a plain string literal, so the JSON
 /// braces in the EXAMPLES section stay literal).
-const HELP_BODY: &str = "  \x1b[35m>> UNIVERSAL LOCAL HOST // FULL SPECTRUM <<\x1b[0m\n\n  universal local host — system stats · fs · exec · pty · kv · os\n\n\x1b[33m  USAGE:\x1b[0m zwire-host [MODE] [OPTIONS]\n\n\x1b[36m  ── MODES ─────────────────────────────────────────────────────\x1b[0m\n  zwire-host                     \x1b[32m//\x1b[0m native-messaging on stdio (Chrome default)\n  zwire-host serve               \x1b[32m//\x1b[0m run the NDJSON socket daemon\n  zwire-host call '<json>'       \x1b[32m//\x1b[0m send one request to the daemon, print reply\n  zwire-host call                \x1b[32m//\x1b[0m ...reading the request JSON from stdin\n  zwire-host call --stream '...' \x1b[32m//\x1b[0m keep printing frames (sysinfo/pty streams)\n  zwire-host version | help      \x1b[32m//\x1b[0m print version / this help\n\n\x1b[36m  ── OPTIONS ───────────────────────────────────────────────────\x1b[0m\n  -s, --socket <path>            \x1b[32m//\x1b[0m socket ($ZWIRE_HOST_SOCK / $XDG_RUNTIME_DIR / ~/.zwire)\n  -f, --stream                   \x1b[32m//\x1b[0m relay every reply frame instead of just the first\n      --tcp <addr>               \x1b[32m//\x1b[0m (serve) also listen for peers/remote clients on TCP\n      --token <tok>              \x1b[32m//\x1b[0m (serve) shared secret required of inbound TCP\n      --name <name>              \x1b[32m//\x1b[0m (serve) advertised peer name (default: hostname)\n      --peer <addr>              \x1b[32m//\x1b[0m (serve) dial a peer and keep it linked; repeatable\n  -h, --help                     \x1b[32m//\x1b[0m print this help\n  -V, --version                  \x1b[32m//\x1b[0m print version\n\n\x1b[36m  ── EXAMPLES ──────────────────────────────────────────────────\x1b[0m\n  zwire-host serve &\n  zwire-host call '{\"cmd\":\"hostinfo\"}'\n  zwire-host call '{\"cmd\":\"fs_walk\",\"path\":\"~/src\",\"ext\":\"rs\"}'\n  echo '{\"cmd\":\"exec\",\"program\":\"git\",\"args\":[\"status\"]}' | zwire-host call\n  zwire-host call --stream '{\"cmd\":\"sysinfo_start\"}'\n  zwire-host serve --tcp 0.0.0.0:7420 --token SECRET --peer other.local:7420\n";
+const HELP_BODY: &str = "  \x1b[35m>> UNIVERSAL LOCAL HOST // FULL SPECTRUM <<\x1b[0m\n\n  universal local host — system stats · fs · exec · pty · kv · os\n\n\x1b[33m  USAGE:\x1b[0m zwire-host [MODE] [OPTIONS]\n\n\x1b[36m  ── MODES ─────────────────────────────────────────────────────\x1b[0m\n  zwire-host                     \x1b[32m//\x1b[0m native-messaging on stdio (Chrome default)\n  zwire-host serve               \x1b[32m//\x1b[0m run the NDJSON socket daemon\n  zwire-host call '<json>'       \x1b[32m//\x1b[0m send one request to the daemon, print reply\n  zwire-host call                \x1b[32m//\x1b[0m ...reading the request JSON from stdin\n  zwire-host call --stream '...' \x1b[32m//\x1b[0m keep printing frames (sysinfo/pty streams)\n  zwire-host version | help      \x1b[32m//\x1b[0m print version / this help\n\n\x1b[36m  ── OPTIONS ───────────────────────────────────────────────────\x1b[0m\n  -s, --socket <path>            \x1b[32m//\x1b[0m socket ($ZWIRE_HOST_SOCK / $XDG_RUNTIME_DIR / $TMPDIR)\n  -f, --stream                   \x1b[32m//\x1b[0m relay every reply frame instead of just the first\n      --tcp <addr>               \x1b[32m//\x1b[0m (serve) also listen for peers/remote clients on TCP\n      --token <tok>              \x1b[32m//\x1b[0m (serve) shared secret required of inbound TCP\n      --name <name>              \x1b[32m//\x1b[0m (serve) advertised peer name (default: hostname)\n      --peer <addr>              \x1b[32m//\x1b[0m (serve) dial a peer and keep it linked; repeatable\n  -h, --help                     \x1b[32m//\x1b[0m print this help\n  -V, --version                  \x1b[32m//\x1b[0m print version\n\n\x1b[36m  ── EXAMPLES ──────────────────────────────────────────────────\x1b[0m\n  zwire-host serve &\n  zwire-host call '{\"cmd\":\"hostinfo\"}'\n  zwire-host call '{\"cmd\":\"fs_walk\",\"path\":\"~/src\",\"ext\":\"rs\"}'\n  echo '{\"cmd\":\"exec\",\"program\":\"git\",\"args\":[\"status\"]}' | zwire-host call\n  zwire-host call --stream '{\"cmd\":\"sysinfo_start\"}'\n  zwire-host serve --tcp 0.0.0.0:7420 --token SECRET --peer other.local:7420\n";
 
 /// Build the styled `--help` / `-h` screen in the MenkeTechnologies house
 /// style (see `tp -h`): banner, a status box padded at runtime so its right

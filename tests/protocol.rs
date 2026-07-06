@@ -36,10 +36,32 @@ fn nm_recv(r: &mut impl Read) -> Option<Value> {
 fn spawn_stdio(home: &PathBuf) -> Child {
     Command::new(BIN)
         .env("HOME", home)
+        // Keep the state dir purely $HOME-relative: these would otherwise
+        // redirect it out of the throwaway home.
+        .env_remove("ZWIRE_STATE")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("APPDATA")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .unwrap()
+}
+
+/// Where `app`'s persistent state lands under a throwaway `$HOME`, mirroring
+/// `store::state_base()` for the OS the test is built for.
+fn app_state_dir(home: &std::path::Path, app: &str) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library").join("Application Support").join(app)
+    }
+    #[cfg(windows)]
+    {
+        home.join("AppData").join("Roaming").join(app)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        home.join(".config").join(app)
+    }
 }
 
 /// An `exec` request that prints `word` — cross-platform, since `echo` is a
@@ -113,7 +135,7 @@ fn kv_roundtrip_and_merge() {
     assert_eq!(nm_recv(&mut so).unwrap()["keys"], json!(["cfg"]));
 
     // The store must live under the app's own dir, isolated from zwire's.
-    assert!(home.join(".myapp/kv/cfg.json").exists());
+    assert!(app_state_dir(&home, "myapp").join("kv").join("cfg.json").exists());
     drop(si);
     let _ = child.wait();
 }

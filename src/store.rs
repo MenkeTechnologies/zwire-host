@@ -1,10 +1,18 @@
-//! Per-app persistent state under `~/.<app>/`.
+//! Per-app persistent state under the OS application-data directory.
+//!
+//! The base dir matches the C++ HUD colour patch (`base::DIR_APP_DATA`) and
+//! `scripts/state-dir.sh`, so the `hud-scheme` the host writes is the exact file
+//! the compiled colour mixer reads — no split-brain across two locations:
+//!   * macOS   `~/Library/Application Support/zwire`
+//!   * Windows `%APPDATA%\zwire`
+//!   * other   `${XDG_CONFIG_HOME:-~/.config}/zwire`
+//! `$ZWIRE_STATE` overrides the whole path (same contract as the launcher).
 //!
 //! Two layers live here:
 //!   * a generic namespaced key/value store (`kv_*`) any app can use, at
-//!     `~/.<app>/kv/<key>.json`;
-//!   * the legacy zwire scheme + UI files (`hud-scheme`, `hud-ui.json`) that the
-//!     original protocol reads and writes, kept verbatim for compatibility.
+//!     `<state>/kv/<key>.json`;
+//!   * the zwire scheme + UI files (`hud-scheme`, `hud-ui.json`) that the HUD
+//!     protocol reads and writes.
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -56,11 +64,44 @@ fn sanitize(name: &str, fallback: &str) -> String {
     }
 }
 
+/// Platform base directory for persistent app state, mirroring the C++ HUD
+/// patch (`base::DIR_APP_DATA`) and `scripts/state-dir.sh`:
+///   * macOS   `~/Library/Application Support`
+///   * Windows `%APPDATA%` (Roaming)
+///   * other   `${XDG_CONFIG_HOME:-~/.config}`
+fn state_base() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home().join("Library").join("Application Support")
+    }
+    #[cfg(windows)]
+    {
+        std::env::var("APPDATA")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join("AppData").join("Roaming"))
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        std::env::var("XDG_CONFIG_HOME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".config"))
+    }
+}
+
 /// The base directory for an app's state, created on demand. `app` empty or
-/// missing resolves to `zwire`, so the legacy single-app layout is unchanged.
+/// missing resolves to `zwire`. For the `zwire` app, `$ZWIRE_STATE` overrides
+/// the whole path (the launcher/native-host contract), keeping the host, the
+/// C++ colour mixer, and the shell scripts pointed at one directory.
 pub fn app_dir(app: &str) -> PathBuf {
     let name = sanitize(app, "zwire");
-    let d = home().join(format!(".{name}"));
+    let d = match std::env::var("ZWIRE_STATE") {
+        Ok(s) if !s.is_empty() && name == "zwire" => PathBuf::from(s),
+        _ => state_base().join(&name),
+    };
     let _ = std::fs::create_dir_all(&d);
     d
 }
