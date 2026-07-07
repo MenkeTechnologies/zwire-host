@@ -171,3 +171,62 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<(), String> {
         Err(v["err"].as_str().unwrap_or("write_failed").to_string())
     }
 }
+
+// ─────────────────────────── shared fleet theme ───────────────────────────
+// Helpers for an app backend (Tauri/JUCE) to sync colour scheme + light/fx with
+// the fleet-wide theme (~/.zwire/global.toml). Read + write are in-process store
+// ops; `theme_watch` bridges live changes (from THIS or ANY app) to a callback,
+// which a backend forwards to its webview as a `theme-changed` event. Pairs with
+// zgui-core's `ZGui.themeSync` on the frontend.
+
+/// The current shared theme as `(scheme, ui)`, where `ui` is the light/fx object.
+pub fn theme_get() -> (String, Value) {
+    let d = crate::store::theme_dir();
+    (crate::store::current_scheme(&d), crate::store::current_ui(&d))
+}
+
+/// Set the shared colour scheme: persist to `global.toml` (+ the `hud-scheme`
+/// projection) and notify every local subscriber + peer so the fleet follows.
+pub fn theme_set_scheme(scheme: &str) {
+    let d = crate::store::theme_dir();
+    crate::store::write_scheme(&d, scheme);
+    crate::theme_watch::note_scheme(scheme);
+    let data = json!({ "scheme": scheme });
+    crate::bus::publish("scheme", &data);
+    crate::peer::broadcast("scheme", &data);
+}
+
+/// Merge a partial light/fx object (e.g. `{"light":true}`) into the shared ui and
+/// notify subscribers + peers. Returns the merged ui.
+pub fn theme_set_ui(partial: &Value) -> Value {
+    let d = crate::store::theme_dir();
+    let ui = crate::store::write_ui(&d, partial);
+    crate::theme_watch::note_ui(&ui);
+    crate::bus::publish("ui", &ui);
+    crate::peer::broadcast("ui", &ui);
+    ui
+}
+
+/// Watch the shared theme for changes and invoke `on_change(scheme, ui)` — once
+/// immediately (so the caller converges to the current value) and thereafter
+/// whenever `global.toml` changes, from this app or any other. Spawns a
+/// background thread and returns at once. An app backend uses this to push live
+/// theme updates into its UI (emit a Tauri/JUCE `theme-changed` event).
+pub fn theme_watch<F>(on_change: F)
+where
+    F: Fn(String, Value) + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let d = crate::store::theme_dir();
+        let mut last = (crate::store::current_scheme(&d), crate::store::current_ui(&d));
+        on_change(last.0.clone(), last.1.clone());
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let cur = (crate::store::current_scheme(&d), crate::store::current_ui(&d));
+            if cur != last {
+                last = cur.clone();
+                on_change(cur.0, cur.1);
+            }
+        }
+    });
+}
