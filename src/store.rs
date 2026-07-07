@@ -269,12 +269,37 @@ pub fn current_scheme(d: &Path) -> String {
         .unwrap_or_else(|| "cyberpunk".into())
 }
 
+/// Serialize the read-modify-write of `global.toml` across ALL host processes
+/// (Chrome spawns one per sendNativeMessage / connectNative). Without this, a
+/// concurrent `{scheme}` + `{ui}` write both `load_global` the OLD file and the
+/// later `save_global` clobbers the earlier — the sporadic "picked scheme
+/// reverts to the old one" bug. An advisory exclusive lock on a sidecar file
+/// (auto-released on process exit, so no stale locks) makes each RMW atomic.
+fn with_global_lock<F: FnOnce()>(d: &Path, f: F) {
+    let _ = std::fs::create_dir_all(d);
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(d.join("global.toml.lock"))
+    {
+        Ok(lock) => {
+            let _ = lock.lock(); // blocks until we hold the exclusive lock
+            f();
+            let _ = lock.unlock();
+        }
+        Err(_) => f(), // lock unavailable — best-effort write rather than drop it
+    }
+}
+
 /// Persist the colour scheme (caller validates against [`SCHEMES`] or a custom
 /// `[schemes.*]`). Preserves the rest of `global.toml` (ui prefs, custom schemes).
 pub fn write_scheme(d: &Path, s: &str) {
-    let mut root = load_global(d);
-    set_path(&mut root, &["theme", "scheme"], toml::Value::String(s.to_string()));
-    save_global(d, &root);
+    with_global_lock(d, || {
+        let mut root = load_global(d);
+        set_path(&mut root, &["theme", "scheme"], toml::Value::String(s.to_string()));
+        save_global(d, &root);
+    });
     // Also emit a plain `hud-scheme` text file beside global.toml. The native C++
     // browser chrome reads the scheme with a tiny FilePathWatcher; giving it a
     // one-line text projection means Chromium needs no TOML parser. `global.toml`
@@ -295,15 +320,18 @@ pub fn current_ui(d: &Path) -> Value {
 /// Shallow-merge `partial` into `[theme.ui]` and persist; returns the merged
 /// object. Preserves scheme + custom schemes.
 pub fn write_ui(d: &Path, partial: &Value) -> Value {
-    let mut root = load_global(d);
-    let mut ui = ui_from(&root);
-    if let (Some(c), Some(p)) = (ui.as_object_mut(), partial.as_object()) {
-        for (k, v) in p {
-            c.insert(k.clone(), v.clone());
+    let mut ui = json!({});
+    with_global_lock(d, || {
+        let mut root = load_global(d);
+        ui = ui_from(&root);
+        if let (Some(c), Some(p)) = (ui.as_object_mut(), partial.as_object()) {
+            for (k, v) in p {
+                c.insert(k.clone(), v.clone());
+            }
         }
-    }
-    let ui_toml = toml::Value::try_from(&ui).unwrap_or_else(|_| toml::Value::Table(Default::default()));
-    set_path(&mut root, &["theme", "ui"], ui_toml);
-    save_global(d, &root);
+        let ui_toml = toml::Value::try_from(&ui).unwrap_or_else(|_| toml::Value::Table(Default::default()));
+        set_path(&mut root, &["theme", "ui"], ui_toml);
+        save_global(d, &root);
+    });
     ui
 }

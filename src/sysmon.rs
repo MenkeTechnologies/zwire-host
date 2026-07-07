@@ -158,6 +158,10 @@ fn stream(out: &Out, stop: &AtomicBool, interval: Duration, id: &str) {
         if !id.is_empty() {
             frame["id"] = json!(id);
         }
+        // Log the pushed statusbar frame so the HUD HOST tab shows the (high
+        // frequency) sysinfo stream that drives the tmux statusbar — these frames
+        // go out via send_msg, not respond(), so they'd otherwise be invisible.
+        crate::hostlog::record("rx", &json!({ "cmd": "sysinfo" }), &frame);
         if send_msg(out, &frame).is_err() {
             return; // port closed
         }

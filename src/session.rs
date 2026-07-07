@@ -111,6 +111,9 @@ impl Session {
     /// Handle one request. `out` is the connection's write sink; background
     /// capabilities (sysinfo, PTY output) keep writing to it after this returns.
     pub fn handle(&mut self, out: &Out, msg: &Value) {
+        // Record the inbound command (tx) to the shared host log so the HUD HOST
+        // tab shows every command sent to zwire-host, from any client/process.
+        crate::hostlog::record("tx", msg, msg);
         if let Some(cmd) = msg["cmd"].as_str() {
             self.handle_cmd(out, msg, cmd);
             return;
@@ -187,6 +190,12 @@ impl Session {
                     msg,
                     json!({"ok": true, "scheme": store::current_scheme(&d), "ui": store::current_ui(&d)}),
                 );
+            }
+
+            /* ---- shared host command log (HUD HOST tab) ---- */
+            "hostlog" => {
+                let n = msg["limit"].as_u64().unwrap_or(300) as usize;
+                respond(out, msg, json!({"ok": true, "log": crate::hostlog::read_tail(n)}));
             }
 
             /* ---- streaming file observers ---- */

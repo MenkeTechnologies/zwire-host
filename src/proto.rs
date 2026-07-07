@@ -86,6 +86,10 @@ pub fn respond(out: &Out, req: &Value, mut v: Value) {
             obj.insert("id".into(), id.clone());
         }
     }
+    // Record the response (rx) to the shared host log. Only real command replies
+    // pass through here; streaming frames (sysinfo/pty/job) use out.send directly
+    // and are intentionally not logged.
+    crate::hostlog::record("rx", req, &v);
     let _ = out.send(&v);
 }
 

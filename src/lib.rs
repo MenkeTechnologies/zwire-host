@@ -23,6 +23,7 @@ pub mod api;
 pub mod bus;
 pub mod exec;
 pub mod fsops;
+pub mod hostlog;
 pub mod jobs;
 pub mod osops;
 pub mod peer;
