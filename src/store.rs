@@ -305,6 +305,10 @@ pub fn write_scheme(d: &Path, s: &str) {
     // one-line text projection means Chromium needs no TOML parser. `global.toml`
     // stays the single source of truth (one writer), so the two never drift.
     write_atomic(&d.join("hud-scheme"), format!("{s}\n").as_bytes());
+    // Refresh the hud-light projection too, so a browser started after a scheme
+    // change (but before any light toggle) still sees the current light state.
+    let light = current_ui(d).get("light").and_then(|v| v.as_bool()).unwrap_or(false);
+    write_hud_light(d, light);
     // Transitional: also write the legacy per-app location (`<app-data>/zwire/
     // hud-scheme`) that a browser built BEFORE the ~/.zwire C++ patch reads, so
     // window-chrome colouring keeps working until that browser is rebuilt.
@@ -333,5 +337,13 @@ pub fn write_ui(d: &Path, partial: &Value) -> Value {
         set_path(&mut root, &["theme", "ui"], ui_toml);
         save_global(d, &root);
     });
+    write_hud_light(d, ui.get("light").and_then(|v| v.as_bool()).unwrap_or(false));
     ui
+}
+
+/// Plain `hud-light` text projection ("1"/"0") beside `hud-scheme`, so the native
+/// C++ chrome can follow light mode with a tiny FilePathWatcher (no TOML parse) —
+/// mirroring how `hud-scheme` projects the colour scheme.
+fn write_hud_light(d: &Path, light: bool) {
+    write_atomic(&d.join("hud-light"), if light { b"1\n" } else { b"0\n" });
 }
