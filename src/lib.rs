@@ -33,6 +33,7 @@ pub mod proto;
 pub mod pty;
 pub mod session;
 pub mod store;
+pub mod theme_watch;
 #[cfg(feature = "sysinfo-caps")]
 pub mod sysmon;
 pub mod transport;

@@ -185,38 +185,125 @@ pub fn kv_keys(app: &str) -> Vec<String> {
 /* ---- legacy zwire scheme + ui ---- */
 
 /// Current HUD scheme (defaults to `cyberpunk`).
-pub fn current_scheme(d: &Path) -> String {
-    std::fs::read_to_string(d.join("hud-scheme"))
-        .map(|s| s.trim().to_string())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "cyberpunk".into())
+// ─────────────────────── shared fleet-wide theme ───────────────────────
+// The colour scheme + light/fx prefs (and user-defined custom schemes) live in
+// ONE app-independent file, `~/.zwire/global.toml`, so EVERY zwire-host client —
+// the browser HUD/newtab/zpwrchrome, Audio-Haxor, zemacs, zpwr-daw, the whole
+// fleet — reads and writes the same theme. `d` is the shared theme dir
+// (`theme_dir()`); the legacy per-app `hud-scheme`/`hud-ui.json` split is gone.
+//
+//   [theme]
+//   scheme = "midnight"
+//   [theme.ui]
+//   light = false
+//   scanlines = true
+//   [schemes.mytheme]        # custom colourschemes, human-editable
+//   "--bg-primary" = "#0a0d16"
+
+/// The shared theme directory (`~/.zwire`, overridable via `$ZWIRE_GLOBAL_DIR`).
+/// App-independent on purpose: this is the fleet's single theme location.
+pub fn theme_dir() -> PathBuf {
+    let d = match std::env::var("ZWIRE_GLOBAL_DIR") {
+        Ok(s) if !s.is_empty() => PathBuf::from(s),
+        _ => home().join(".zwire"),
+    };
+    let _ = std::fs::create_dir_all(&d);
+    d
 }
 
-/// Persist the HUD scheme (caller validates against [`SCHEMES`]).
-pub fn write_scheme(d: &Path, s: &str) {
-    write_atomic(&d.join("hud-scheme"), format!("{s}\n").as_bytes());
+fn global_path(d: &Path) -> PathBuf {
+    d.join("global.toml")
 }
 
-/// Current HUD UI-preference object (empty object when unset).
-pub fn current_ui(d: &Path) -> Value {
-    std::fs::read_to_string(d.join("hud-ui.json"))
+/// Load `global.toml` as a TOML table (empty table when absent/unparseable).
+fn load_global(d: &Path) -> toml::Value {
+    std::fs::read_to_string(global_path(d))
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|s| s.parse::<toml::Value>().ok())
+        .filter(|v| v.is_table())
+        .unwrap_or_else(|| toml::Value::Table(Default::default()))
+}
+
+fn save_global(d: &Path, v: &toml::Value) {
+    if let Ok(s) = toml::to_string_pretty(v) {
+        write_atomic(&global_path(d), s.as_bytes());
+    }
+}
+
+/// Set `root[path…] = val`, creating intermediate tables. `root` must be a table.
+fn set_path(root: &mut toml::Value, path: &[&str], val: toml::Value) {
+    fn go(tbl: &mut toml::map::Map<String, toml::Value>, path: &[&str], val: toml::Value) {
+        if path.len() == 1 {
+            tbl.insert(path[0].to_string(), val);
+            return;
+        }
+        let e = tbl
+            .entry(path[0].to_string())
+            .or_insert_with(|| toml::Value::Table(Default::default()));
+        if !e.is_table() {
+            *e = toml::Value::Table(Default::default());
+        }
+        go(e.as_table_mut().unwrap(), &path[1..], val);
+    }
+    if let Some(tbl) = root.as_table_mut() {
+        go(tbl, path, val);
+    }
+}
+
+fn ui_from(root: &toml::Value) -> Value {
+    root.get("theme")
+        .and_then(|t| t.get("ui"))
+        .and_then(|u| serde_json::to_value(u).ok())
+        .filter(|v| v.is_object())
         .unwrap_or_else(|| json!({}))
 }
 
-/// Shallow-merge `partial` into the HUD UI object and persist it; returns the
-/// merged object.
+/// Current colour scheme (`[theme].scheme`), defaulting to `cyberpunk`.
+pub fn current_scheme(d: &Path) -> String {
+    load_global(d)
+        .get("theme")
+        .and_then(|t| t.get("scheme"))
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "cyberpunk".into())
+}
+
+/// Persist the colour scheme (caller validates against [`SCHEMES`] or a custom
+/// `[schemes.*]`). Preserves the rest of `global.toml` (ui prefs, custom schemes).
+pub fn write_scheme(d: &Path, s: &str) {
+    let mut root = load_global(d);
+    set_path(&mut root, &["theme", "scheme"], toml::Value::String(s.to_string()));
+    save_global(d, &root);
+    // Also emit a plain `hud-scheme` text file beside global.toml. The native C++
+    // browser chrome reads the scheme with a tiny FilePathWatcher; giving it a
+    // one-line text projection means Chromium needs no TOML parser. `global.toml`
+    // stays the single source of truth (one writer), so the two never drift.
+    write_atomic(&d.join("hud-scheme"), format!("{s}\n").as_bytes());
+    // Transitional: also write the legacy per-app location (`<app-data>/zwire/
+    // hud-scheme`) that a browser built BEFORE the ~/.zwire C++ patch reads, so
+    // window-chrome colouring keeps working until that browser is rebuilt.
+    // Harmless afterwards (nothing reads it). Remove once every build is current.
+    write_atomic(&app_dir("zwire").join("hud-scheme"), format!("{s}\n").as_bytes());
+}
+
+/// Current light/fx UI-preference object (`[theme.ui]`; empty when unset).
+pub fn current_ui(d: &Path) -> Value {
+    ui_from(&load_global(d))
+}
+
+/// Shallow-merge `partial` into `[theme.ui]` and persist; returns the merged
+/// object. Preserves scheme + custom schemes.
 pub fn write_ui(d: &Path, partial: &Value) -> Value {
-    let mut cur = current_ui(d);
-    if let (Some(c), Some(p)) = (cur.as_object_mut(), partial.as_object()) {
+    let mut root = load_global(d);
+    let mut ui = ui_from(&root);
+    if let (Some(c), Some(p)) = (ui.as_object_mut(), partial.as_object()) {
         for (k, v) in p {
             c.insert(k.clone(), v.clone());
         }
     }
-    if let Ok(s) = serde_json::to_vec(&cur) {
-        write_atomic(&d.join("hud-ui.json"), &s);
-    }
-    cur
+    let ui_toml = toml::Value::try_from(&ui).unwrap_or_else(|_| toml::Value::Table(Default::default()));
+    set_path(&mut root, &["theme", "ui"], ui_toml);
+    save_global(d, &root);
+    ui
 }

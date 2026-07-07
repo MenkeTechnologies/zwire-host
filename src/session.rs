@@ -117,9 +117,10 @@ impl Session {
         }
         // Legacy commandless messages: {ui:{…}} and {scheme:"…"}.
         if !msg["ui"].is_null() {
-            let ui = store::write_ui(&store::app_dir("zwire"), &msg["ui"]);
+            let ui = store::write_ui(&store::theme_dir(), &msg["ui"]);
             // Notify local subscribers and every peer so all apps on all
             // machines keep their UI prefs in sync live.
+            crate::theme_watch::note_ui(&ui); // record our own write so the watcher won't echo it
             bus::publish("ui", &ui);
             peer::broadcast("ui", &ui);
             respond(out, msg, json!({"ok": true, "ui": ui}));
@@ -180,7 +181,7 @@ impl Session {
 
             /* ---- legacy zwire scheme + ui + get ---- */
             "get" => {
-                let d = store::app_dir("zwire");
+                let d = store::theme_dir();
                 respond(
                     out,
                     msg,
@@ -234,6 +235,23 @@ impl Session {
                 if let Some(topic) = msg["topic"].as_str() {
                     bus::subscribe(id, topic);
                     respond(out, msg, json!({"ok": true, "topic": topic}));
+                    // Live cross-process theme sync: once anyone cares about the
+                    // theme topics, start the shared-file watcher (idempotent).
+                    if topic == "ui" || topic == "scheme" {
+                        crate::theme_watch::ensure_started();
+                    }
+                    // Snapshot-on-subscribe for the theme topics: hand the new
+                    // subscriber the CURRENT value right away (same frame shape as
+                    // a live pub), so any client — zwire's HUD/newtab/zpwrchrome
+                    // extensions, zemacs, zpwr-daw — converges to the persisted
+                    // scheme + light/fx the instant it connects, with no separate
+                    // `get` and no polling. The host is the single source of truth.
+                    let d = store::theme_dir();
+                    match topic {
+                        "scheme" => bus::send_one(out, "scheme", &json!({ "scheme": store::current_scheme(&d) })),
+                        "ui" => bus::send_one(out, "ui", &store::current_ui(&d)),
+                        _ => {}
+                    }
                 } else {
                     respond(out, msg, json!({"ok": false, "err": "no_topic"}));
                 }
@@ -381,9 +399,10 @@ impl Session {
 
     fn set_scheme(&self, out: &Out, msg: &Value, s: &str) {
         if store::SCHEMES.contains(&s) {
-            store::write_scheme(&store::app_dir("zwire"), s);
+            store::write_scheme(&store::theme_dir(), s);
             // Push the change to every local subscriber and every peer for live
             // cross-app, cross-machine theme sync.
+            crate::theme_watch::note_scheme(s); // record our own write so the watcher won't echo it
             let data = json!({ "scheme": s });
             bus::publish("scheme", &data);
             peer::broadcast("scheme", &data);

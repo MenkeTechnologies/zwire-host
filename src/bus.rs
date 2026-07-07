@@ -66,6 +66,15 @@ pub fn unsubscribe(id: u64, topic: &str) {
     }
 }
 
+/// Send a single `{"ev":"pub",…}` frame to ONE sink (not a fan-out). Used for
+/// snapshot-on-subscribe: hand a brand-new subscriber the current value of a
+/// topic immediately, in the exact frame shape it will see for live updates, so
+/// it converges without a separate `get` or a poll.
+pub fn send_one(out: &Out, topic: &str, data: &Value) {
+    let frame = json!({ "ev": "pub", "topic": topic, "data": data });
+    let _ = send_msg(out, &frame);
+}
+
 /// Publish `data` to `topic`; returns how many subscribers received it. Target
 /// sinks are collected under the lock and written to outside it, so IO never
 /// blocks the broker or deadlocks a publisher that is also a subscriber.
