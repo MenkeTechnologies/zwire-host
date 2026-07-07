@@ -195,7 +195,11 @@ impl Session {
             /* ---- shared host command log (HUD HOST tab) ---- */
             "hostlog" => {
                 let n = msg["limit"].as_u64().unwrap_or(300) as usize;
-                respond(out, msg, json!({"ok": true, "log": crate::hostlog::read_tail(n)}));
+                respond(
+                    out,
+                    msg,
+                    json!({"ok": true, "log": crate::hostlog::read_tail(n)}),
+                );
             }
 
             /* ---- streaming file observers ---- */
@@ -257,7 +261,11 @@ impl Session {
                     // `get` and no polling. The host is the single source of truth.
                     let d = store::theme_dir();
                     match topic {
-                        "scheme" => bus::send_one(out, "scheme", &json!({ "scheme": store::current_scheme(&d) })),
+                        "scheme" => bus::send_one(
+                            out,
+                            "scheme",
+                            &json!({ "scheme": store::current_scheme(&d) }),
+                        ),
                         "ui" => bus::send_one(out, "ui", &store::current_ui(&d)),
                         _ => {}
                     }

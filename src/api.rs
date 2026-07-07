@@ -182,7 +182,10 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<(), String> {
 /// The current shared theme as `(scheme, ui)`, where `ui` is the light/fx object.
 pub fn theme_get() -> (String, Value) {
     let d = crate::store::theme_dir();
-    (crate::store::current_scheme(&d), crate::store::current_ui(&d))
+    (
+        crate::store::current_scheme(&d),
+        crate::store::current_ui(&d),
+    )
 }
 
 /// Set the shared colour scheme: persist to `global.toml` (+ the `hud-scheme`
@@ -218,11 +221,17 @@ where
 {
     std::thread::spawn(move || {
         let d = crate::store::theme_dir();
-        let mut last = (crate::store::current_scheme(&d), crate::store::current_ui(&d));
+        let mut last = (
+            crate::store::current_scheme(&d),
+            crate::store::current_ui(&d),
+        );
         on_change(last.0.clone(), last.1.clone());
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
-            let cur = (crate::store::current_scheme(&d), crate::store::current_ui(&d));
+            let cur = (
+                crate::store::current_scheme(&d),
+                crate::store::current_ui(&d),
+            );
             if cur != last {
                 last = cur.clone();
                 on_change(cur.0, cur.1);

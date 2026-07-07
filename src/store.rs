@@ -297,7 +297,11 @@ fn with_global_lock<F: FnOnce()>(d: &Path, f: F) {
 pub fn write_scheme(d: &Path, s: &str) {
     with_global_lock(d, || {
         let mut root = load_global(d);
-        set_path(&mut root, &["theme", "scheme"], toml::Value::String(s.to_string()));
+        set_path(
+            &mut root,
+            &["theme", "scheme"],
+            toml::Value::String(s.to_string()),
+        );
         save_global(d, &root);
     });
     // Also emit a plain `hud-scheme` text file beside global.toml. The native C++
@@ -307,13 +311,19 @@ pub fn write_scheme(d: &Path, s: &str) {
     write_atomic(&d.join("hud-scheme"), format!("{s}\n").as_bytes());
     // Refresh the hud-light projection too, so a browser started after a scheme
     // change (but before any light toggle) still sees the current light state.
-    let light = current_ui(d).get("light").and_then(|v| v.as_bool()).unwrap_or(false);
+    let light = current_ui(d)
+        .get("light")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     write_hud_light(d, light);
     // Transitional: also write the legacy per-app location (`<app-data>/zwire/
     // hud-scheme`) that a browser built BEFORE the ~/.zwire C++ patch reads, so
     // window-chrome colouring keeps working until that browser is rebuilt.
     // Harmless afterwards (nothing reads it). Remove once every build is current.
-    write_atomic(&app_dir("zwire").join("hud-scheme"), format!("{s}\n").as_bytes());
+    write_atomic(
+        &app_dir("zwire").join("hud-scheme"),
+        format!("{s}\n").as_bytes(),
+    );
 }
 
 /// Current light/fx UI-preference object (`[theme.ui]`; empty when unset).
@@ -333,11 +343,15 @@ pub fn write_ui(d: &Path, partial: &Value) -> Value {
                 c.insert(k.clone(), v.clone());
             }
         }
-        let ui_toml = toml::Value::try_from(&ui).unwrap_or_else(|_| toml::Value::Table(Default::default()));
+        let ui_toml =
+            toml::Value::try_from(&ui).unwrap_or_else(|_| toml::Value::Table(Default::default()));
         set_path(&mut root, &["theme", "ui"], ui_toml);
         save_global(d, &root);
     });
-    write_hud_light(d, ui.get("light").and_then(|v| v.as_bool()).unwrap_or(false));
+    write_hud_light(
+        d,
+        ui.get("light").and_then(|v| v.as_bool()).unwrap_or(false),
+    );
     ui
 }
 
