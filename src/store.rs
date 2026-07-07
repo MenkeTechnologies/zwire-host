@@ -3,9 +3,13 @@
 //! The base dir matches the C++ HUD colour patch (`base::DIR_APP_DATA`) and
 //! `scripts/state-dir.sh`, so the `hud-scheme` the host writes is the exact file
 //! the compiled colour mixer reads — no split-brain across two locations:
-//!   * macOS   `~/Library/Application Support/zwire`
+//!   * macOS   `~/Library/Application Support/com.menketechnologies.zwire`
 //!   * Windows `%APPDATA%\zwire`
 //!   * other   `${XDG_CONFIG_HOME:-~/.config}/zwire`
+//!
+//! On macOS the zwire folder is the bundle identifier (matching the .app's
+//! CFBundleIdentifier and `scripts/state-dir.sh`); the other platforms keep the
+//! short `zwire` name.
 //!
 //! `$ZWIRE_STATE` overrides the whole path (same contract as the launcher).
 //!
@@ -93,15 +97,30 @@ fn state_base() -> PathBuf {
     }
 }
 
+/// On-disk folder name for the zwire browser's own state. On macOS this is the
+/// bundle identifier (matching the .app's `CFBundleIdentifier`, the convention
+/// that Application Support dirs are named by reverse-DNS id, and
+/// `scripts/state-dir.sh`); the other platforms keep the short `zwire` name.
+#[cfg(target_os = "macos")]
+const ZWIRE_DIRNAME: &str = "com.menketechnologies.zwire";
+#[cfg(not(target_os = "macos"))]
+const ZWIRE_DIRNAME: &str = "zwire";
+
 /// The base directory for an app's state, created on demand. `app` empty or
-/// missing resolves to `zwire`. For the `zwire` app, `$ZWIRE_STATE` overrides
-/// the whole path (the launcher/native-host contract), keeping the host, the
-/// C++ colour mixer, and the shell scripts pointed at one directory.
+/// missing resolves to the zwire app. For the `zwire` app, `$ZWIRE_STATE`
+/// overrides the whole path (the launcher/native-host contract) and otherwise
+/// the folder is [`ZWIRE_DIRNAME`], keeping the host, the C++ colour mixer, and
+/// the shell scripts pointed at one directory. Any other `app` gets its own
+/// `<app>` sub-folder for the generic kv store.
 pub fn app_dir(app: &str) -> PathBuf {
     let name = sanitize(app, "zwire");
-    let d = match std::env::var("ZWIRE_STATE") {
-        Ok(s) if !s.is_empty() && name == "zwire" => PathBuf::from(s),
-        _ => state_base().join(&name),
+    let d = if name == "zwire" {
+        match std::env::var("ZWIRE_STATE") {
+            Ok(s) if !s.is_empty() => PathBuf::from(s),
+            _ => state_base().join(ZWIRE_DIRNAME),
+        }
+    } else {
+        state_base().join(&name)
     };
     let _ = std::fs::create_dir_all(&d);
     d

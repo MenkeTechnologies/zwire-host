@@ -48,11 +48,19 @@ fn spawn_stdio(home: &PathBuf) -> Child {
 }
 
 /// Where `app`'s persistent state lands under a throwaway `$HOME`, mirroring
-/// `store::state_base()` for the OS the test is built for.
+/// `store::app_dir()` for the OS the test is built for — including the macOS
+/// bundle-id folder the `zwire` app resolves to.
 fn app_state_dir(home: &std::path::Path, app: &str) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        home.join("Library").join("Application Support").join(app)
+        let folder = if app == "zwire" {
+            "com.menketechnologies.zwire"
+        } else {
+            app
+        };
+        home.join("Library")
+            .join("Application Support")
+            .join(folder)
     }
     #[cfg(windows)]
     {
