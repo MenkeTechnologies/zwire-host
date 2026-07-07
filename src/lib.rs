@@ -33,6 +33,8 @@ pub mod proto;
 pub mod pty;
 pub mod session;
 pub mod store;
+#[cfg(feature = "tauri")]
+pub mod tauri_theme;
 pub mod theme_watch;
 #[cfg(feature = "sysinfo-caps")]
 pub mod sysmon;
