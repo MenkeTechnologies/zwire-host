@@ -252,6 +252,17 @@ fn pubsub_delivers_to_subscribers() {
     nm_send(&mut si, &json!({"cmd": "sub", "topic": "scheme"}));
     assert_eq!(nm_recv(&mut so).unwrap()["ok"], json!(true));
 
+    // Snapshot-on-subscribe: subscribing to the `scheme` topic immediately
+    // pushes the host's current scheme in the same frame shape as a live pub,
+    // so a fresh client converges without a separate `get`. In a temp home
+    // with no persisted theme this is the `cyberpunk` default. Consume it
+    // before the pub below so we assert against the published frame, not the
+    // hydration snapshot.
+    let snap = nm_recv(&mut so).unwrap();
+    assert_eq!(snap["ev"], json!("pub"), "snapshot frame: {snap}");
+    assert_eq!(snap["topic"], json!("scheme"));
+    assert_eq!(snap["data"]["scheme"], json!("cyberpunk"));
+
     nm_send(
         &mut si,
         &json!({"cmd": "pub", "topic": "scheme", "data": {"scheme": "matrix"}}),

@@ -184,7 +184,6 @@ pub fn kv_keys(app: &str) -> Vec<String> {
 
 /* ---- legacy zwire scheme + ui ---- */
 
-/// Current HUD scheme (defaults to `cyberpunk`).
 // ─────────────────────── shared fleet-wide theme ───────────────────────
 // The colour scheme + light/fx prefs (and user-defined custom schemes) live in
 // ONE app-independent file, `~/.zwire/global.toml`, so EVERY zwire-host client —
