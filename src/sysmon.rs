@@ -64,10 +64,16 @@ pub fn snapshot(
         "mem".into(),
         json!({"u": mu, "t": mt, "p": (mu * 100).checked_div(mt).unwrap_or(0)}),
     );
+    // Always emit swap (like `mem`), even when total is 0 — on macOS the dynamic
+    // pager reports 0 total until a swapfile is allocated, which is a real "0 used
+    // of 0" state, not "unavailable". Dropping the key made the statusbar show the
+    // `–` placeholder (reserved for a missing provider). `checked_div` guards the
+    // divide-by-zero that the old `st > 0` gate was really protecting against.
     let (su, st) = (sys.used_swap(), sys.total_swap());
-    if st > 0 {
-        d.insert("swap".into(), json!({"u": su, "t": st, "p": su * 100 / st}));
-    }
+    d.insert(
+        "swap".into(),
+        json!({"u": su, "t": st, "p": (su * 100).checked_div(st).unwrap_or(0)}),
+    );
     let la = System::load_average();
     d.insert(
         "load".into(),
