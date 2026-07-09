@@ -500,4 +500,82 @@ mod tests {
             _ => panic!("wrong variant"),
         }
     }
+
+    #[test]
+    fn exec_action_roundtrips_with_args() {
+        let a: Action =
+            serde_json::from_value(json!({"exec": {"program": "echo", "args": ["a", "b"]}}))
+                .unwrap();
+        match a {
+            Action::Exec { program, args } => {
+                assert_eq!(program, "echo");
+                assert_eq!(args, vec!["a".to_string(), "b".to_string()]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn exec_action_args_default_empty() {
+        let a: Action = serde_json::from_value(json!({"exec": {"program": "ls"}})).unwrap();
+        match a {
+            Action::Exec { args, .. } => assert!(args.is_empty()),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn default_script_names_the_event_and_emits_actions() {
+        let s = default_script("scheme-changed");
+        assert!(s.contains("scheme-changed"), "script names the event: {s}");
+        assert!(s.contains("actions"), "script emits an actions object: {s}");
+    }
+
+    #[test]
+    fn last_json_line_skips_non_actions_objects() {
+        // A JSON object without `actions` must NOT be picked, even though it
+        // parses — the scan is for the *actions-carrying* trailing line, so
+        // structured log lines above it can't be mistaken for the result.
+        let out = "{\"log\":\"warming up\"}\n{\"metric\":42}\n{\"actions\":[{\"pub\":{\"topic\":\"t\"}}]}";
+        let found = last_json_line(out).expect("actions line found");
+        assert_eq!(
+            found["actions"].as_array().map(|a| a.len()),
+            Some(1),
+            "picked the actions line, not the noise: {found}"
+        );
+    }
+
+    #[test]
+    fn last_json_line_none_when_no_actions_present() {
+        // Pure log noise with a JSON object that lacks `actions` yields None.
+        assert!(last_json_line("plain log\n{\"ok\":true}\ntrailing").is_none());
+    }
+
+    #[test]
+    fn dispatch_stdout_counts_actions_among_log_noise() {
+        // `pub` actions dispatch through the in-process bus, which is a no-op
+        // with no subscribers — so this exercises the count without any real
+        // OS side effect. Two valid actions on a trailing line among log lines
+        // must both be counted.
+        let out = "info: hook fired\ndebug: building actions\n\
+                   {\"actions\":[{\"pub\":{\"topic\":\"a\",\"data\":1}},{\"pub\":{\"topic\":\"b\"}}]}";
+        assert_eq!(dispatch_stdout(out), 2, "both pub actions dispatched");
+    }
+
+    #[test]
+    fn dispatch_stdout_ignores_unknown_verbs_in_count() {
+        // A bare, whole-stdout actions object with one known + one unknown verb
+        // counts only the recognized `pub`. Unknown verbs fail to deserialize
+        // and are silently skipped, never dispatched.
+        let out = "{\"actions\":[{\"pub\":{\"topic\":\"t\"}},{\"frobnicate\":{\"x\":1}}]}";
+        assert_eq!(dispatch_stdout(out), 1, "only the known verb counts");
+    }
+
+    #[test]
+    fn dispatch_stdout_zero_for_empty_or_actionless() {
+        assert_eq!(dispatch_stdout(""), 0);
+        assert_eq!(dispatch_stdout("   \n  "), 0);
+        assert_eq!(dispatch_stdout("not json at all"), 0);
+        assert_eq!(dispatch_stdout("{\"actions\":[]}"), 0);
+    }
 }

@@ -33,6 +33,20 @@ fn nm_recv(r: &mut impl Read) -> Option<Value> {
     serde_json::from_slice(&buf).ok()
 }
 
+/// Read frames until one carries an `ok` field, skipping async push frames
+/// (those have an `ev` key and no `ok`). The stryke LSP reader thread can
+/// interleave `stryke-lsp-rx`/`stryke-lsp-exit` frames with command acks, so a
+/// naked `nm_recv` isn't guaranteed to land on the ack.
+fn nm_recv_ack(r: &mut impl Read) -> Value {
+    for _ in 0..20 {
+        let m = nm_recv(r).expect("a reply frame");
+        if m.get("ok").is_some() {
+            return m;
+        }
+    }
+    panic!("no ok-bearing reply within 20 frames");
+}
+
 fn spawn_stdio(home: &PathBuf) -> Child {
     Command::new(BIN)
         .env("HOME", home)
@@ -560,6 +574,171 @@ fn stryke_run_executes_inline_or_reports_missing() {
     } else {
         assert!(r["err"].as_str().unwrap_or("").to_lowercase().contains("stryke"), "clean missing-binary error: {r}");
     }
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn hooks_persist_across_host_processes() {
+    // The Hooks page saves a hook in one native-message spawn; the background
+    // worker fires it in a *different* spawn. Both must see the same on-disk
+    // manifest — this is the disk-backed contract the browser design relies on.
+    let home = temp_home();
+    {
+        let mut a = spawn_stdio(&home);
+        let mut si = a.stdin.take().unwrap();
+        let mut so = a.stdout.take().unwrap();
+        nm_send(&mut si, &json!({"cmd":"hooks_save","hook":{"name":"Persist","event":"host-ready","enabled":true}}));
+        assert_eq!(nm_recv(&mut so).unwrap()["ok"], json!(true));
+        drop(si);
+        let _ = a.wait();
+    }
+    let mut b = spawn_stdio(&home);
+    let mut si = b.stdin.take().unwrap();
+    let mut so = b.stdout.take().unwrap();
+    nm_send(&mut si, &json!({"cmd":"hooks_list"}));
+    let listed = nm_recv(&mut so).expect("list reply");
+    let arr = listed["hooks"].as_array().expect("hooks array");
+    assert_eq!(arr.len(), 1, "hook persisted across processes: {listed}");
+    assert_eq!(arr[0]["name"], json!("Persist"));
+    drop(si);
+    let _ = b.wait();
+}
+
+#[test]
+fn stryke_lsp_send_without_start_errors() {
+    // No stryke needed: sending before start hits the None guard cleanly.
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+    nm_send(&mut si, &json!({"cmd":"stryke_lsp_send","message":"{}"}));
+    let r = nm_recv(&mut so).expect("a reply");
+    assert_eq!(r["ok"], json!(false));
+    assert!(r["err"].as_str().unwrap_or("").contains("not running"), "guard msg: {r}");
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn stryke_lsp_stop_is_idempotent_without_start() {
+    // No stryke needed: stopping a server that was never started must still
+    // reply cleanly with ok:true — the Hooks editor closing sends stop
+    // unconditionally, so a no-op stop can never error or hang.
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+    nm_send(&mut si, &json!({"cmd":"stryke_lsp_stop"}));
+    let r = nm_recv(&mut so).expect("a reply");
+    assert_eq!(r["ok"], json!(true), "idempotent stop: {r}");
+    // A second stop is still fine.
+    nm_send(&mut si, &json!({"cmd":"stryke_lsp_stop"}));
+    assert_eq!(nm_recv(&mut so).expect("a reply")["ok"], json!(true));
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn stryke_lsp_start_stop_cycle() {
+    // CI-safe: `stryke_lsp_start` spawns `stryke --lsp`. With stryke present the
+    // start acks ok:true and a following stop tears the child down and re-acks
+    // ok:true; without stryke the start acks ok:false with a stryke-mentioning
+    // error, and stop is still a clean no-op. Never hangs (stdin dropped ⇒ EOF).
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+
+    nm_send(&mut si, &json!({"cmd":"stryke_lsp_start"}));
+    let start = nm_recv_ack(&mut so);
+    if start["ok"] == json!(true) {
+        // Server is up; stop must reply ok:true after killing the child. Use
+        // the ack-draining recv since the reader thread pushes a trailing
+        // `stryke-lsp-exit` frame when the child dies.
+        nm_send(&mut si, &json!({"cmd":"stryke_lsp_stop"}));
+        let stop = nm_recv_ack(&mut so);
+        assert_eq!(stop["ok"], json!(true), "stop after start: {stop}");
+    } else {
+        assert!(
+            start["err"].as_str().unwrap_or("").to_lowercase().contains("stryke"),
+            "clean missing-binary error: {start}"
+        );
+        // Even after a failed start, stop stays a clean no-op.
+        nm_send(&mut si, &json!({"cmd":"stryke_lsp_stop"}));
+        assert_eq!(nm_recv_ack(&mut so)["ok"], json!(true));
+    }
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn stryke_run_reports_error_for_bad_code() {
+    // CI-safe: a syntax-error script. With stryke present the child compiles,
+    // fails, and exits non-zero → ok:true with code != 0 (and stderr text);
+    // without stryke the host returns ok:false mentioning the missing binary.
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+    nm_send(&mut si, &json!({"cmd":"stryke_run","code":")("}));
+    let r = nm_recv(&mut so).expect("a reply");
+    if r["ok"] == json!(true) {
+        assert_eq!(r["timedOut"], json!(false), "should not time out: {r}");
+        // A compile failure surfaces as a non-zero exit code and/or stderr.
+        let nonzero = r["code"].as_i64().map_or(false, |c| c != 0);
+        let has_stderr = !r["stderr"].as_str().unwrap_or("").is_empty();
+        assert!(nonzero || has_stderr, "bad code flagged an error: {r}");
+    } else {
+        assert!(
+            r["err"].as_str().unwrap_or("").to_lowercase().contains("stryke"),
+            "clean missing-binary error: {r}"
+        );
+    }
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn stryke_run_passes_stdin_through() {
+    // CI-safe: `p <>` echoes the whole of stdin. With stryke present the
+    // supplied `stdin` string must round-trip to stdout; without stryke the
+    // host returns a clean missing-binary error.
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+    nm_send(
+        &mut si,
+        &json!({"cmd":"stryke_run","code":"p <>","stdin":"zwire-stdin-marker"}),
+    );
+    let r = nm_recv(&mut so).expect("a reply");
+    if r["ok"] == json!(true) {
+        assert_eq!(r["code"], json!(0), "clean run: {r}");
+        assert!(
+            r["stdout"].as_str().unwrap_or("").contains("zwire-stdin-marker"),
+            "stdin round-tripped to stdout: {r}"
+        );
+    } else {
+        assert!(
+            r["err"].as_str().unwrap_or("").to_lowercase().contains("stryke"),
+            "clean missing-binary error: {r}"
+        );
+    }
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn hooks_save_empty_name_gets_slug_id() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+    nm_send(&mut si, &json!({"cmd":"hooks_save","hook":{"name":"","event":"navigation","enabled":false}}));
+    let saved = nm_recv(&mut so).expect("save reply");
+    assert_eq!(saved["ok"], json!(true));
+    assert!(saved["hook"]["id"].as_str().unwrap_or("").starts_with("hook-"), "slug fallback: {saved}");
     drop(si);
     let _ = child.wait();
 }
