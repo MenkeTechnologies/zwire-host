@@ -7,7 +7,7 @@
 //! every capability is reachable from every client with no per-transport code.
 use crate::proto::{respond, send_msg, Out};
 use crate::store;
-use crate::{bus, exec, fsops, jobs, osops, peer, watch};
+use crate::{bus, exec, fsops, hooks, jobs, osops, peer, watch};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -48,6 +48,9 @@ pub struct Session {
     #[cfg(feature = "pty")]
     ptys: HashMap<String, crate::pty::PtySession>,
     watchers: HashMap<String, watch::Watcher>,
+    /// The `stryke --lsp` language server for the Hooks editor, if started on
+    /// this connection. Dropped (and killed) when the session ends.
+    stryke_lsp: Option<crate::stryke_lsp::StrykeLsp>,
     #[cfg(feature = "sysinfo-caps")]
     sysmon: Option<crate::sysmon::Monitor>,
     /// Bus subscriber handle, allocated lazily on the first `sub`.
@@ -89,6 +92,7 @@ impl Session {
             #[cfg(feature = "pty")]
             ptys: HashMap::new(),
             watchers: HashMap::new(),
+            stryke_lsp: None,
             #[cfg(feature = "sysinfo-caps")]
             sysmon: None,
             sub_id: None,
@@ -188,7 +192,7 @@ impl Session {
                 respond(
                     out,
                     msg,
-                    json!({"ok": true, "scheme": store::current_scheme(&d), "ui": store::current_ui(&d)}),
+                    json!({"ok": true, "version": crate::VERSION, "scheme": store::current_scheme(&d), "ui": store::current_ui(&d)}),
                 );
             }
 
@@ -200,6 +204,68 @@ impl Session {
                     msg,
                     json!({"ok": true, "log": crate::hostlog::read_tail(n)}),
                 );
+            }
+
+            /* ---- stryke lifecycle hooks (ported from Audio-Haxor hooks.rs) ---- */
+            "hooks_list" => respond(out, msg, hooks::list()),
+            "hooks_events" => respond(out, msg, hooks::events()),
+            "hooks_save" => respond(out, msg, hooks::save(msg)),
+            "hooks_delete" => respond(out, msg, hooks::delete(msg)),
+            "hooks_set_enabled" => respond(out, msg, hooks::set_enabled(msg)),
+            "hooks_get_script" => respond(out, msg, hooks::get_script(msg)),
+            "hooks_script_path" => respond(out, msg, hooks::script_path_of(msg)),
+            "hooks_set_script" => respond(out, msg, hooks::set_script(msg)),
+            "hooks_test_run" => respond(out, msg, hooks::test_run(msg)),
+            "hook_fire" => respond(out, msg, hooks::fire_cmd(msg)),
+
+            /* ---- stryke language server for the Hooks editor (ported from
+               Audio-Haxor stryke_lsp.rs) — one child per connection ---- */
+            "stryke_lsp_start" => {
+                self.stryke_lsp = None; // kill any prior server first
+                match crate::stryke_lsp::StrykeLsp::start(out) {
+                    Ok(l) => {
+                        self.stryke_lsp = Some(l);
+                        respond(out, msg, json!({"ok": true}));
+                    }
+                    Err(e) => respond(out, msg, json!({"ok": false, "err": e})),
+                }
+            }
+            "stryke_lsp_send" => {
+                let m = msg["message"].as_str().unwrap_or("");
+                match self.stryke_lsp.as_mut() {
+                    Some(l) => match l.send(m) {
+                        Ok(()) => respond(out, msg, json!({"ok": true})),
+                        Err(e) => respond(out, msg, json!({"ok": false, "err": e})),
+                    },
+                    None => respond(
+                        out,
+                        msg,
+                        json!({"ok": false, "err": "stryke language server not running"}),
+                    ),
+                }
+            }
+            "stryke_lsp_stop" => {
+                self.stryke_lsp = None;
+                respond(out, msg, json!({"ok": true}));
+            }
+            // Run inline stryke code (`stryke -E <code>`) for the command-wizard
+            // "stryke script" step; optional `stdin`. 10s cap.
+            "stryke_run" => {
+                let code = msg["code"].as_str().unwrap_or("");
+                let stdin = msg["stdin"].as_str().unwrap_or("");
+                match crate::stryke_runner::run_code(
+                    code,
+                    stdin,
+                    std::time::Duration::from_secs(10),
+                ) {
+                    Ok(o) => respond(
+                        out,
+                        msg,
+                        json!({"ok": true, "stdout": o.stdout, "stderr": o.stderr,
+                               "code": o.code, "timedOut": o.timed_out}),
+                    ),
+                    Err(e) => respond(out, msg, json!({"ok": false, "err": e})),
+                }
             }
 
             /* ---- streaming file observers ---- */

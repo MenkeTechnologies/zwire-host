@@ -96,6 +96,7 @@ fn get_returns_scheme_and_ui() {
     assert_eq!(resp["ok"], json!(true));
     assert!(resp["scheme"].is_string(), "scheme present: {resp}");
     assert!(resp["ui"].is_object(), "ui present: {resp}");
+    assert!(resp["version"].is_string(), "version present: {resp}");
     drop(si);
     let _ = child.wait();
 }
@@ -479,4 +480,86 @@ fn socket_daemon_round_trips_over_the_wire() {
     let _ = daemon.wait();
     #[cfg(not(windows))]
     let _ = std::fs::remove_file(&ep);
+}
+
+#[test]
+fn hooks_events_lists_catalog() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+    nm_send(&mut si, &json!({"cmd": "hooks_events"}));
+    let r = nm_recv(&mut so).expect("a reply");
+    assert_eq!(r["ok"], json!(true));
+    assert!(r["events"].as_array().map_or(false, |a| !a.is_empty()), "events present: {r}");
+    assert!(
+        r["actions"].as_array().map_or(false, |a| a.iter().any(|v| v == "notify")),
+        "actions include notify: {r}"
+    );
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn hooks_save_list_get_roundtrip() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+    nm_send(&mut si, &json!({"cmd":"hooks_save","hook":{"name":"Tabby","event":"tab-created","enabled":true}}));
+    let saved = nm_recv(&mut so).expect("save reply");
+    assert_eq!(saved["ok"], json!(true));
+    let id = saved["hook"]["id"].as_str().expect("id").to_string();
+    assert!(id.starts_with("tabby-"), "slug id: {id}");
+    assert_eq!(saved["hook"]["timeout_ms"], json!(10000), "default timeout filled");
+    nm_send(&mut si, &json!({"cmd":"hooks_list"}));
+    let listed = nm_recv(&mut so).expect("list reply");
+    let hooks = listed["hooks"].as_array().expect("hooks array");
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0]["event"], json!("tab-created"));
+    nm_send(&mut si, &json!({"cmd":"hooks_get_script","id": id}));
+    let scr = nm_recv(&mut so).expect("script reply");
+    assert!(scr["code"].as_str().unwrap_or("").contains("actions"), "default script scaffolded: {scr}");
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn hooks_enable_toggle_and_delete() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+    nm_send(&mut si, &json!({"cmd":"hooks_save","hook":{"name":"X","event":"navigation","enabled":false}}));
+    let id = nm_recv(&mut so).unwrap()["hook"]["id"].as_str().unwrap().to_string();
+    nm_send(&mut si, &json!({"cmd":"hooks_set_enabled","id": id, "enabled": true}));
+    assert_eq!(nm_recv(&mut so).unwrap()["ok"], json!(true));
+    nm_send(&mut si, &json!({"cmd":"hooks_list"}));
+    assert_eq!(nm_recv(&mut so).unwrap()["hooks"][0]["enabled"], json!(true));
+    nm_send(&mut si, &json!({"cmd":"hooks_delete","id": id}));
+    assert_eq!(nm_recv(&mut so).unwrap()["ok"], json!(true));
+    nm_send(&mut si, &json!({"cmd":"hooks_list"}));
+    assert_eq!(nm_recv(&mut so).unwrap()["hooks"].as_array().unwrap().len(), 0);
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn stryke_run_executes_inline_or_reports_missing() {
+    // CI-safe: with stryke installed the code runs and prints 42; without it the
+    // host returns a clean not-found error. Never hangs (10s cap in the host).
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+    nm_send(&mut si, &json!({"cmd":"stryke_run","code":"p 6 * 7"}));
+    let r = nm_recv(&mut so).expect("a reply");
+    if r["ok"] == json!(true) {
+        assert!(r["stdout"].as_str().unwrap_or("").contains("42"), "stryke ran: {r}");
+        assert_eq!(r["code"], json!(0));
+    } else {
+        assert!(r["err"].as_str().unwrap_or("").to_lowercase().contains("stryke"), "clean missing-binary error: {r}");
+    }
+    drop(si);
+    let _ = child.wait();
 }

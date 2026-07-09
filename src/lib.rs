@@ -23,6 +23,7 @@ pub mod api;
 pub mod bus;
 pub mod exec;
 pub mod fsops;
+pub mod hooks;
 pub mod hostlog;
 pub mod jobs;
 pub mod osops;
@@ -34,6 +35,8 @@ pub mod proto;
 pub mod pty;
 pub mod session;
 pub mod store;
+pub mod stryke_lsp;
+pub mod stryke_runner;
 #[cfg(feature = "sysinfo-caps")]
 pub mod sysmon;
 #[cfg(feature = "tauri")]

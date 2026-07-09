@@ -157,6 +157,22 @@ multiplex many in-flight requests, streams, and terminals over one connection.
 The daemon itself publishes on `scheme` / `ui` whenever those change, so a
 subscribed app (a HUD, an editor) gets **live theme sync** without polling.
 
+**stryke hooks & scripting** (runs [`stryke`](https://github.com/MenkeTechnologies/strykelang) via a bundled sidecar — the browser never spawns it directly)
+
+| Message | Reply / effect |
+|---|---|
+| `{"cmd":"hooks_events"}` | lifecycle-event catalog + action verbs → `{events:[…],actions:[…]}`. |
+| `{"cmd":"hooks_save","hook":{name,event,enabled,timeout_ms?}}` | create/update a hook (scaffolds a starter `<id>.st`) → `{ok,hook}`. |
+| `{"cmd":"hooks_list" / "hooks_delete" / "hooks_set_enabled" / "hooks_get_script" / "hooks_set_script" / "hooks_script_path",…}` | manage hooks + their stryke scripts. |
+| `{"cmd":"hook_fire","event":…,"payload":{…}}` | run every enabled hook bound to `event`; each script's `{actions:[…]}` is dispatched (notify/open/exec/pub). |
+| `{"cmd":"hooks_test_run","id":…,"sample":{…}}` | dry-run a hook (parses actions, does **not** dispatch). |
+| `{"cmd":"stryke_run","code":"p 1+1","stdin"?}` | run inline stryke (`stryke -E`) → `{ok,stdout,stderr,code,timedOut}`. |
+| `{"cmd":"stryke_lsp_start" / "stryke_lsp_send" / "stryke_lsp_stop",…}` | drive a per-connection `stryke --lsp` server; frames arrive as `{"ev":"stryke-lsp-rx","message":…}`. |
+
+`stryke` is resolved via `ZWIRE_STRYKE` → the sibling next to this host (the
+bundled sidecar) → `$PATH` → cargo/Homebrew, so an installed zwire needs no
+system stryke.
+
 **Host-to-host peering** (a mesh of daemons across machines)
 
 Run daemons with TCP peering and the bus **federates across machines** — a
@@ -190,8 +206,9 @@ fully-meshed topologies without loops.
 | `{"cmd":"pty_write","id"?,"data"\|"b64":…}` | feed input. |
 | `{"cmd":"pty_resize","id"?,"rows":R,"cols":C}` / `{"cmd":"pty_kill","id"?}` | resize / kill; kill emits `{ev:"exit"}`. |
 
-**Legacy zwire scheme/ui** (unchanged): `{"cmd":"get"}`, `{"scheme":"matrix"}`,
-`{"ui":{…}}` bridge `~/.zwire/hud-scheme` + `~/.zwire/hud-ui.json`.
+**Legacy zwire scheme/ui** (unchanged): `{"cmd":"get"}` (replies with `version` +
+`scheme` + `ui`), `{"scheme":"matrix"}`, `{"ui":{…}}` bridge `~/.zwire/hud-scheme`
++ `~/.zwire/hud-ui.json`.
 
 ## [0x03] CLI
 
