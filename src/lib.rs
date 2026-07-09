@@ -19,6 +19,11 @@
 //! capability is reachable from every client.
 //!
 //! [`zwire`]: https://github.com/MenkeTechnologies/zwire
+
+// The hooks event catalog (`hooks::events`) is one large `json!` literal; its
+// nesting exceeds the default macro recursion limit.
+#![recursion_limit = "512"]
+
 pub mod api;
 pub mod bus;
 pub mod exec;

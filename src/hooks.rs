@@ -80,8 +80,15 @@ fn save_manifest(dir: &Path, hooks: &[Hook]) -> Result<(), String> {
 
 // ── firing ──
 
-/// Fire all enabled hooks bound to `event`. Returns immediately; scripts run on a
-/// background thread. The hot path (no matching hook) is one small manifest read.
+/// Fire all enabled hooks bound to `event`, running each script to completion
+/// before returning. The hot path (no matching hook) is one small manifest read.
+///
+/// Runs SYNCHRONOUSLY on purpose: the browser fires events via one-shot
+/// `sendNativeMessage`, so Chrome closes the port (and can tear down the host's
+/// whole process group) the instant it reads the reply. A background thread —
+/// and the `stryke` child it spawned — would be killed before the script ran.
+/// Blocking here means the reply is sent only after the hooks have actually run,
+/// so the host (and its children) stay alive for the duration.
 pub fn fire(event: &str, payload: Value) {
     let dir = hooks_dir();
     let matching: Vec<Hook> = load_manifest(&dir)
@@ -91,39 +98,36 @@ pub fn fire(event: &str, payload: Value) {
     if matching.is_empty() {
         return;
     }
-    let event = event.to_string();
-    std::thread::spawn(move || {
-        let envelope = json!({ "event": event, "payload": payload }).to_string();
-        for h in matching {
-            let sp = script_path(&dir, &h.id);
-            if !sp.is_file() {
-                continue;
+    let envelope = json!({ "event": event, "payload": payload }).to_string();
+    for h in matching {
+        let sp = script_path(&dir, &h.id);
+        if !sp.is_file() {
+            continue;
+        }
+        match run_script(&sp, event, &envelope, Duration::from_millis(h.timeout_ms)) {
+            Ok(out) => {
+                let done = dispatch_stdout(&out.stdout);
+                bus::publish(
+                    "hook-result",
+                    &json!({
+                        "id": h.id,
+                        "event": event,
+                        "ok": !out.timed_out,
+                        "timedOut": out.timed_out,
+                        "code": out.code,
+                        "actions": done,
+                        "stderr": truncate(&out.stderr, 4000),
+                    }),
+                );
             }
-            match run_script(&sp, &event, &envelope, Duration::from_millis(h.timeout_ms)) {
-                Ok(out) => {
-                    let done = dispatch_stdout(&out.stdout);
-                    bus::publish(
-                        "hook-result",
-                        &json!({
-                            "id": h.id,
-                            "event": event,
-                            "ok": !out.timed_out,
-                            "timedOut": out.timed_out,
-                            "code": out.code,
-                            "actions": done,
-                            "stderr": truncate(&out.stderr, 4000),
-                        }),
-                    );
-                }
-                Err(e) => {
-                    bus::publish(
-                        "hook-result",
-                        &json!({ "id": h.id, "event": event, "ok": false, "error": e }),
-                    );
-                }
+            Err(e) => {
+                bus::publish(
+                    "hook-result",
+                    &json!({ "id": h.id, "event": event, "ok": false, "error": e }),
+                );
             }
         }
-    });
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -286,14 +290,70 @@ pub fn events() -> Value {
     json!({
         "ok": true,
         "events": [
+            // ── catch-all ──
+            { "name": "action", "desc": "ANY command/menu/palette/toolbar invocation — bind one hook and filter by $_.command", "sample": { "command": "palette:New tab" } },
+            // ── runtime / browser lifecycle ──
+            { "name": "app-open", "desc": "The browser launched (cold start)", "sample": Value::Null },
+            { "name": "app-close", "desc": "The last window closed — the browser is quitting", "sample": Value::Null },
             { "name": "host-ready", "desc": "The native host started", "sample": Value::Null },
-            { "name": "navigation", "desc": "A tab navigated to a URL", "sample": { "url": "https://example.com", "tabId": 12 } },
-            { "name": "tab-created", "desc": "A tab was opened", "sample": { "tabId": 12, "url": "about:blank" } },
-            { "name": "tab-closed", "desc": "A tab was closed", "sample": { "tabId": 12 } },
+            { "name": "extension-installed", "desc": "The HUD extension was installed or updated", "sample": { "reason": "update" } },
+            { "name": "browser-suspend", "desc": "The extension worker is suspending", "sample": Value::Null },
+            { "name": "update-available", "desc": "A HUD extension update is ready", "sample": { "version": "0.6.0" } },
+            // ── tabs ──
+            { "name": "tab-created", "desc": "A tab was opened", "sample": { "tabId": 12, "url": "about:blank", "windowId": 1 } },
+            { "name": "tab-closed", "desc": "A tab was closed", "sample": { "tabId": 12, "windowId": 1, "windowClosing": false } },
+            { "name": "tab-activated", "desc": "The active tab changed", "sample": { "tabId": 12, "windowId": 1 } },
+            { "name": "tab-updated", "desc": "A tab finished loading", "sample": { "tabId": 12, "url": "https://example.com", "status": "complete" } },
+            { "name": "tab-moved", "desc": "A tab was moved within its window", "sample": { "tabId": 12, "windowId": 1, "fromIndex": 0, "toIndex": 2 } },
+            { "name": "tab-detached", "desc": "A tab was pulled out of its window", "sample": { "tabId": 12, "oldWindowId": 1, "oldPosition": 2 } },
+            { "name": "tab-attached", "desc": "A tab was docked into a window", "sample": { "tabId": 12, "newWindowId": 3, "newPosition": 0 } },
+            { "name": "tab-replaced", "desc": "A tab was replaced (prerender/instant)", "sample": { "addedTabId": 13, "removedTabId": 12 } },
+            { "name": "tab-highlighted", "desc": "The set of highlighted tabs changed", "sample": { "windowId": 1, "tabIds": [12, 13] } },
+            { "name": "tab-zoom-changed", "desc": "A tab's zoom level changed", "sample": { "tabId": 12, "newZoom": 1.25, "oldZoom": 1.0 } },
+            // ── windows ──
+            { "name": "window-created", "desc": "A browser window opened", "sample": { "windowId": 1, "type": "normal", "incognito": false } },
+            { "name": "window-closed", "desc": "A browser window closed", "sample": { "windowId": 1 } },
+            { "name": "window-focus-changed", "desc": "Window focus changed (-1 = none)", "sample": { "windowId": 1 } },
+            // ── navigation (top frame) ──
+            { "name": "navigation-started", "desc": "A navigation is about to begin", "sample": { "tabId": 12, "url": "https://example.com" } },
+            { "name": "navigation", "desc": "A tab navigated to a URL (committed)", "sample": { "tabId": 12, "url": "https://example.com", "transition": "link" } },
+            { "name": "dom-content-loaded", "desc": "The page DOM finished parsing", "sample": { "tabId": 12, "url": "https://example.com" } },
+            { "name": "navigation-completed", "desc": "A tab finished navigating", "sample": { "tabId": 12, "url": "https://example.com" } },
+            { "name": "navigation-error", "desc": "A navigation failed", "sample": { "tabId": 12, "url": "https://example.com", "error": "net::ERR_ABORTED" } },
+            { "name": "history-state-updated", "desc": "An in-page (SPA) history navigation happened", "sample": { "tabId": 12, "url": "https://example.com/route" } },
+            // ── downloads ──
+            { "name": "download-started", "desc": "A download began", "sample": { "id": 1, "url": "https://example.com/f.zip", "filename": "f.zip" } },
+            { "name": "download-completed", "desc": "A download completed", "sample": { "id": 1 } },
+            { "name": "download-erased", "desc": "A download was erased from history", "sample": { "id": 1 } },
+            // ── bookmarks ──
+            { "name": "bookmark-created", "desc": "A bookmark was added", "sample": { "id": "42", "title": "zwire", "url": "https://example.com" } },
+            { "name": "bookmark-removed", "desc": "A bookmark was removed", "sample": { "id": "42" } },
+            { "name": "bookmark-changed", "desc": "A bookmark's title/url changed", "sample": { "id": "42", "title": "zwire", "url": "https://example.com" } },
+            { "name": "bookmark-moved", "desc": "A bookmark was moved", "sample": { "id": "42" } },
+            // ── history ──
+            { "name": "history-visited", "desc": "A URL was recorded in history", "sample": { "url": "https://example.com", "title": "Example" } },
+            { "name": "history-removed", "desc": "History entries were removed", "sample": { "allHistory": false, "urls": ["https://example.com"] } },
+            // ── sessions ──
+            { "name": "session-restored", "desc": "A closed tab/window was restored", "sample": Value::Null },
+            // ── management (other extensions) ──
+            { "name": "management-installed", "desc": "Another extension was installed", "sample": { "id": "abcd…", "name": "Some Extension" } },
+            { "name": "management-uninstalled", "desc": "Another extension was uninstalled", "sample": { "id": "abcd…" } },
+            { "name": "management-enabled", "desc": "Another extension was enabled", "sample": { "id": "abcd…", "name": "Some Extension" } },
+            { "name": "management-disabled", "desc": "Another extension was disabled", "sample": { "id": "abcd…", "name": "Some Extension" } },
+            // ── input / system ──
+            { "name": "command", "desc": "A registered keyboard command fired", "sample": { "command": "open-palette" } },
+            { "name": "alarm", "desc": "A scheduled alarm fired", "sample": { "name": "hourly" } },
+            { "name": "notification-clicked", "desc": "A HUD notification was clicked", "sample": { "id": "note-1" } },
+            { "name": "notification-closed", "desc": "A HUD notification was dismissed", "sample": { "id": "note-1", "byUser": true } },
+            { "name": "action-clicked", "desc": "The toolbar action icon was clicked", "sample": { "tabId": 12 } },
+            { "name": "display-changed", "desc": "A monitor was added/removed/reconfigured", "sample": Value::Null },
+            // ── HUD lifecycle ──
+            { "name": "terminal-opened", "desc": "The HUD terminal overlay opened in a tab", "sample": { "tabId": 12 } },
+            { "name": "terminal-closed", "desc": "The HUD terminal overlay closed in a tab", "sample": { "tabId": 12 } },
             { "name": "scheme-changed", "desc": "The HUD color scheme changed", "sample": { "scheme": "matrix" } },
-            { "name": "palette-command", "desc": "A ⌘K palette command ran", "sample": { "command": "open-devtools" } },
-            { "name": "session-saved", "desc": "A tmux/session snapshot was saved", "sample": { "name": "work" } },
-            { "name": "pane-split", "desc": "A tmux pane was split", "sample": { "dir": "h" } },
+            { "name": "palette-command", "desc": "A ⌘K palette command ran", "sample": { "command": "New tab" } },
+            { "name": "session-saved", "desc": "A tmux/session snapshot was saved", "sample": { "count": 3 } },
+            { "name": "pane-split", "desc": "A tmux pane was split", "sample": { "dir": "h", "paneId": 7 } },
             { "name": "audio-eq-changed", "desc": "The browser-wide audio engine config changed", "sample": { "spec": "0.0;gain,1.2" } }
         ],
         "actions": ["notify", "open", "exec", "pub"]
