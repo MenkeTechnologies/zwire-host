@@ -213,6 +213,13 @@ impl Session {
                 self.watchers.insert(key, watcher);
                 respond(out, msg, json!({"ok": true, "watching": true}));
             }
+            // zwire HUD — PUSH stream of the engine meter file (no page polling).
+            "meter_stream" => {
+                let key = Self::key(msg);
+                let watcher = watch::Watcher::meter_stream(out, msg, key.clone());
+                self.watchers.insert(key, watcher);
+                respond(out, msg, json!({"ok": true, "streaming": true}));
+            }
             "watch_stop" => {
                 self.watchers.remove(&Self::key(msg));
                 respond(out, msg, json!({"ok": true}));

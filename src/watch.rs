@@ -61,6 +61,17 @@ impl Watcher {
         })
     }
 
+    /// Stream a small rewritten JSON file (the zwire HUD engine meter frames)
+    /// to the client on every change — a PUSH feed so the page never polls (which
+    /// starves during scroll / page build). Pushes `{"ev":"meter","text":…}`.
+    pub fn meter_stream(out: &Out, req: &Value, id: String) -> Watcher {
+        let path = expand(req["path"].as_str().unwrap_or("."));
+        let interval = Duration::from_millis(req["interval_ms"].as_u64().unwrap_or(33).max(16));
+        Self::spawn(out, move |out, stop| {
+            meter_loop(out, stop, &path, interval, &id)
+        })
+    }
+
     fn spawn(out: &Out, body: impl FnOnce(&Out, &AtomicBool) + Send + 'static) -> Watcher {
         let stop = Arc::new(AtomicBool::new(false));
         let (s2, o) = (stop.clone(), out.clone());
@@ -87,6 +98,28 @@ fn with_id(mut ev: Value, id: &str) -> Value {
         ev["id"] = json!(id);
     }
     ev
+}
+
+// Push the file's content on every change (mtime bump). Host-side thread, so it
+// is immune to the page's main-thread throttling during scroll / initial build.
+fn meter_loop(out: &Out, stop: &AtomicBool, path: &Path, interval: Duration, id: &str) {
+    let mut last = 0u64;
+    while !stop.load(Ordering::Relaxed) {
+        if let Some(mt) = mtime_ms(path) {
+            if mt != last {
+                last = mt;
+                if let Ok(bytes) = std::fs::read(path) {
+                    if let Ok(text) = String::from_utf8(bytes) {
+                        let frame = with_id(json!({ "ev": "meter", "text": text }), id);
+                        if send_msg(out, &frame).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        sleep_sliced(stop, interval);
+    }
 }
 
 fn mtime_ms(p: &Path) -> Option<u64> {
