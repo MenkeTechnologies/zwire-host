@@ -40,48 +40,73 @@ fn socket_dir() -> PathBuf {
     base.join("zgui")
 }
 
-/// The host commands advertised on the automation surface (`App::open("zwire")->verbs()`). Discovery
-/// only — `call` accepts any command `session::handle` understands, whether listed here or not.
+/// The command surface advertised on `App::open("zwire")->verbs()`. Comprehensive — every host
+/// command `session::handle_cmd` (+ the fs/jobs/os/procs sub-handlers) accepts, plus the
+/// `browser.*` verbs the Chromium HUD executes. Discovery only; `call` accepts any command.
 const SURFACE_VERBS: &[&str] = &[
-    "hello",
-    "hostinfo",
-    // key/value store (namespaced by `app`)
-    "kv_get",
-    "kv_set",
-    "kv_merge",
-    "kv_del",
-    "kv_keys",
-    // filesystem
-    "fs_walk",
-    "fs_read",
-    "fs_write",
-    "fs_stat",
-    "fs_list",
-    // process / exec
+    "clipboard_get",
+    "clipboard_set",
     "exec",
-    "ps",
-    "kill",
-    "which",
-    // os integration
-    "open",
-    "clipboard",
-    "notify",
-    // theme
-    "scheme",
-    "ui",
-    // hooks
-    "hooks_list",
-    "hooks_events",
-    "hooks_save",
-    "hooks_delete",
-    "hooks_set_enabled",
+    "fs_append",
+    "fs_list",
+    "fs_mkdir",
+    "fs_read",
+    "fs_rm",
+    "fs_stat",
+    "fs_tail",
+    "fs_walk",
+    "fs_watch",
+    "fs_write",
+    "get",
+    "hello",
     "hook_fire",
-    // pub/sub — the raw host topic bus (host-side subscribe/publish).
+    "hooks_delete",
+    "hooks_events",
+    "hooks_get_script",
+    "hooks_list",
+    "hooks_save",
+    "hooks_script_path",
+    "hooks_set_enabled",
+    "hooks_set_script",
+    "hooks_test_run",
+    "hostinfo",
+    "hostlog",
+    "job_list",
+    "job_poll",
+    "job_result",
+    "job_start",
+    "kill",
+    "kv_del",
+    "kv_get",
+    "kv_keys",
+    "kv_merge",
+    "kv_set",
+    "meter_stream",
+    "notify",
+    "open",
+    "peer",
+    "peer_connect",
+    "peers",
+    "ping",
+    "ps",
+    "pty_kill",
+    "pty_resize",
+    "pty_spawn",
+    "pty_write",
     "pub",
+    "stryke_lsp_send",
+    "stryke_lsp_start",
+    "stryke_lsp_stop",
+    "stryke_run",
     "sub",
+    "sysinfo_once",
+    "sysinfo_start",
+    "sysinfo_stop",
     "unsub",
-    // BROWSER commands (executed by the Chromium HUD, forwarded via the zbus.action topic). These are
-    // the `cmd()` actions in background.js: tabs, windows, terminal.
+    "watch_list",
+    "watch_stop",
+    "which",
+    // BROWSER commands (Chromium HUD, forwarded via the zbus.action topic).
     "browser.newTab",
     "browser.newWindow",
     "browser.closeTab",
@@ -92,9 +117,9 @@ const SURFACE_VERBS: &[&str] = &[
     "browser.muteTab",
     "browser.nextTab",
     "browser.prevTab",
-    "browser.activate",  // { tabId }
-    "browser.open",      // { url } — navigate the active tab
-    "browser.openTab",   // { url } — open a new tab
+    "browser.activate",
+    "browser.open",
+    "browser.openTab",
     "browser.tmux",
 ];
 
