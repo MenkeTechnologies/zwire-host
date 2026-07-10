@@ -253,17 +253,30 @@ impl Session {
             "stryke_run" => {
                 let code = msg["code"].as_str().unwrap_or("");
                 let stdin = msg["stdin"].as_str().unwrap_or("");
+                // Snapshot the queued-action nonce BEFORE running, so we only piggyback an action this
+                // script actually produced (not a stale one left in the kv).
+                let before = crate::store::kv_get("zwire", "__zbus_action")
+                    .get("_n")
+                    .and_then(|n| n.as_u64());
                 match crate::stryke_runner::run_code(
                     code,
                     stdin,
                     std::time::Duration::from_secs(10),
                 ) {
-                    Ok(o) => respond(
-                        out,
-                        msg,
-                        json!({"ok": true, "stdout": o.stdout, "stderr": o.stderr,
-                               "code": o.code, "timedOut": o.timed_out}),
-                    ),
+                    Ok(o) => {
+                        let mut body = json!({"ok": true, "stdout": o.stdout, "stderr": o.stderr,
+                               "code": o.code, "timedOut": o.timed_out});
+                        // A `browser.*` call in the script left its action in the file-backed kv. Ride it
+                        // back on THIS reply and consume it, so the extension needs no separate kv_get
+                        // round-trip (that fired only intermittently) — delivery is as reliable as the run.
+                        let a = crate::store::kv_get("zwire", "__zbus_action");
+                        let n = a.get("_n").and_then(|x| x.as_u64());
+                        if a.get("a").is_some() && n != before {
+                            body["zbAction"] = a;
+                            crate::store::kv_del("zwire", "__zbus_action");
+                        }
+                        respond(out, msg, body)
+                    }
                     Err(e) => respond(out, msg, json!({"ok": false, "err": e})),
                 }
             }
