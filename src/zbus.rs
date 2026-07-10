@@ -76,10 +76,26 @@ const SURFACE_VERBS: &[&str] = &[
     "hooks_delete",
     "hooks_set_enabled",
     "hook_fire",
-    // pub/sub — reach the browser HUD (tabs / windows / terminal open-close are HUD commands the
-    // browser executes when it receives the published event).
-    "bus_pub",
-    "bus_sub",
+    // pub/sub — the raw host topic bus (host-side subscribe/publish).
+    "pub",
+    "sub",
+    "unsub",
+    // BROWSER commands (executed by the Chromium HUD, forwarded via the zbus.action topic). These are
+    // the `cmd()` actions in background.js: tabs, windows, terminal.
+    "browser.newTab",
+    "browser.newWindow",
+    "browser.closeTab",
+    "browser.closeOthers",
+    "browser.reopenTab",
+    "browser.duplicateTab",
+    "browser.pinTab",
+    "browser.muteTab",
+    "browser.nextTab",
+    "browser.prevTab",
+    "browser.activate",  // { tabId }
+    "browser.open",      // { url } — navigate the active tab
+    "browser.openTab",   // { url } — open a new tab
+    "browser.tmux",
 ];
 
 /// A `std::io::Write` sink that captures everything written into a shared buffer, so we can run a real
@@ -98,7 +114,29 @@ impl Write for Capture {
 
 /// Run one host command through a real (authed, local) session with a capturing sink and return the
 /// reply object it emitted. Streaming commands (sysinfo/pty/job) return only their first frame.
+///
+/// `browser.<action>` verbs are BROWSER commands the Chromium HUD executes (tabs / windows / etc.),
+/// not host commands — they are FORWARDED to the HUD by publishing `{a:<action>, …args}` on the
+/// `zbus.action` topic. background.js (subscribed on its persistent native port) writes that to
+/// `zb_cmd` storage, which drives the existing action pipeline. Fire-and-forget (returns delivery
+/// count, not the browser result). Works when this process owns the zgui socket AND holds the HUD's
+/// subscription — the long-lived sysinfo host, which does both in practice.
 fn run_command(verb: &str, args: &Value) -> Value {
+    if let Some(action) = verb.strip_prefix("browser.") {
+        let mut data = serde_json::Map::new();
+        data.insert("a".into(), json!(action));
+        if let Some(o) = args.as_object() {
+            for (k, v) in o {
+                if k != "cmd" && k != "a" {
+                    data.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        let payload = Value::Object(data);
+        let delivered = crate::bus::publish("zbus.action", &payload);
+        let forwarded = crate::peer::broadcast("zbus.action", &payload);
+        return json!({ "ok": true, "action": action, "delivered": delivered, "forwarded": forwarded });
+    }
     // Build the host request `{"cmd":verb, …args, "id":1}`.
     let mut obj = serde_json::Map::new();
     obj.insert("cmd".into(), json!(verb));
