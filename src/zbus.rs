@@ -206,28 +206,34 @@ fn handle_conn(stream: UnixStream) {
     }
 }
 
-/// Open the `App::open("zwire")` bus socket and serve it in the background. Best-effort: if another
-/// zwire-host instance already owns the socket, we simply don't serve (first instance wins). Called
-/// once at startup from every run mode so the bus is up whenever zwire-host is running.
+/// Open the `App::open("zwire")` bus socket and serve it in the background. Called once at startup
+/// from every run mode so the bus is up whenever zwire-host is running (including the short-lived
+/// hosts a `stryke_run` spawns).
+///
+/// The BIND is SYNCHRONOUS — by the time this returns, the socket exists and is listening, so a
+/// script that runs immediately afterward (e.g. `App::open("zwire")` inside a one-shot `stryke -E`
+/// spawned by this very host) never races an unbound socket. Only the accept loop is backgrounded.
+/// Best-effort: if another zwire-host already holds a LIVE socket we adopt it (don't rebind); a stale
+/// socket from an exited host (connect → refused) is removed and rebound here.
 pub fn start() {
+    let dir = socket_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    let sock = dir.join("zwire.sock");
+    // A live listener means another instance owns the bus — leave it be (the child connects to it).
+    if UnixStream::connect(&sock).is_ok() {
+        return;
+    }
+    // Otherwise the file (if any) is stale: clear it and bind ourselves, synchronously.
+    let _ = std::fs::remove_file(&sock);
+    let listener = match UnixListener::bind(&sock) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
     std::thread::Builder::new()
         .name("zwire-zbus".into())
-        .spawn(|| {
-            let dir = socket_dir();
-            let _ = std::fs::create_dir_all(&dir);
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-            let sock = dir.join("zwire.sock");
-            // Clear a stale socket from a crashed prior run, then bind. A live peer means another
-            // instance owns it — leave it alone.
-            if UnixStream::connect(&sock).is_ok() {
-                return;
-            }
-            let _ = std::fs::remove_file(&sock);
-            let listener = match UnixListener::bind(&sock) {
-                Ok(l) => l,
-                Err(_) => return,
-            };
-            let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
+        .spawn(move || {
             for conn in listener.incoming() {
                 match conn {
                     Ok(stream) => {
