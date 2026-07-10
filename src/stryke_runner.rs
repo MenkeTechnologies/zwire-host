@@ -18,6 +18,56 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+
+/// The `App` package version bundled with zwire (matches `stryke-app/stryke.toml`).
+const STRYKE_APP_VERSION: &str = "0.1.0";
+
+/// Locate the bundled `stryke-app` package (`stryke.toml` + `lib/App.stk` + the cdylib), staged next
+/// to the host executable at build time (a sibling `stryke-app/` dir, or `../Resources/stryke-app`
+/// inside a macOS `.app`).
+fn bundled_stryke_app_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    for cand in [
+        dir.join("stryke-app"),
+        dir.join("../Resources/stryke-app"),
+        dir.join("../stryke-app"),
+    ] {
+        if cand.join("lib").join("App.stk").is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// Ensure the `App` package is present in the stryke store so `use App` resolves with NO user install
+/// of stryke-app (or stryke). Copies the bundled package into
+/// `$STRYKE_HOME/store/stryke-app@<ver>/` (default `~/.stryke/store/…`) once, on first run; a no-op
+/// after that. Best-effort — a missing bundle just leaves the store untouched.
+pub fn ensure_stryke_app() {
+    let store = std::env::var_os("STRYKE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".stryke")))
+        .map(|r| r.join("store").join(format!("stryke-app@{STRYKE_APP_VERSION}")));
+    let Some(dest) = store else { return };
+    if dest.join("lib").join("App.stk").is_file() {
+        return; // already extracted
+    }
+    let Some(src) = bundled_stryke_app_dir() else { return };
+    let _ = std::fs::create_dir_all(dest.join("lib"));
+    for rel in [
+        "stryke.toml",
+        "lib/App.stk",
+        "lib/libstryke_app.dylib",
+        "lib/libstryke_app.so",
+        "lib/stryke_app.dll",
+    ] {
+        let s = src.join(rel);
+        if s.is_file() {
+            let _ = std::fs::copy(&s, dest.join(rel));
+        }
+    }
+}
 use std::time::{Duration, Instant};
 
 /// Cap on retained stdout/stderr bytes from a single hook script.
@@ -113,11 +163,16 @@ pub fn run_script(
     timeout: Duration,
 ) -> Result<RunOutcome, String> {
     let stryke = resolve_stryke().ok_or_else(|| "stryke binary not found on PATH".to_string())?;
+    // Self-contained scripting: extract the bundled `App` package into the store on first run so
+    // `use App` resolves without the user ever installing stryke-app (or stryke) themselves.
+    ensure_stryke_app();
 
     let mut child = Command::new(&stryke)
         .arg(script_path)
         .env("ZWIRE_EVENT", event_name)
         .env("ZWIRE_HOOK", "1")
+        // Let scripts/hooks resolve `App::here()` to this app over the automation bus.
+        .env("ZGUI_APP", "zwire")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -175,10 +230,12 @@ pub fn run_script(
 /// [`run_script`]. Backs the command-wizard "stryke script" step.
 pub fn run_code(code: &str, stdin_data: &str, timeout: Duration) -> Result<RunOutcome, String> {
     let stryke = resolve_stryke().ok_or_else(|| "stryke binary not found on PATH".to_string())?;
+    ensure_stryke_app();
 
     let mut child = Command::new(&stryke)
         .arg("-E")
         .arg(code)
+        .env("ZGUI_APP", "zwire")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

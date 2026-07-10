@@ -49,6 +49,8 @@ pub mod tauri_theme;
 pub mod theme_watch;
 pub mod transport;
 pub mod watch;
+/// GUI Automation Bus endpoint — `App::open("zwire")` (native zgui-bridge protocol, no proprietary dep).
+pub mod zbus;
 
 // Re-export the handful of types a dependent binary needs to embed the host.
 // This lets sibling hosts (e.g. `zpwrchrome-host`) pull this crate in and reuse
@@ -193,6 +195,12 @@ pub fn run(args: Vec<String>) {
             _ => positional.push(a),
         }
     }
+
+    // Self-contained scripting + automation bus, up in every run mode (the browser launches the
+    // stdio host): extract the bundled `App` package if missing, then open the `App::open("zwire")`
+    // socket so stryke can drive the host. Both are best-effort and never block startup.
+    stryke_runner::ensure_stryke_app();
+    zbus::start();
 
     match positional.first().map(String::as_str) {
         Some("serve") => transport::serve(transport::ServeConfig {

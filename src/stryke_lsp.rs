@@ -43,6 +43,8 @@ impl StrykeLsp {
 
         let mut child = Command::new(&stryke)
             .arg("--lsp")
+            // Let scripts/hooks resolve `App::here()` to this app over the automation bus.
+            .env("ZGUI_APP", "zwire")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
