@@ -158,9 +158,22 @@ fn run_command(verb: &str, args: &Value) -> Value {
             }
         }
         let payload = Value::Object(data);
+        // Same-process fast path.
         let delivered = crate::bus::publish("zbus.action", &payload);
         let forwarded = crate::peer::broadcast("zbus.action", &payload);
-        return json!({ "ok": true, "action": action, "delivered": delivered, "forwarded": forwarded });
+        // Cross-process delivery: the HUD's host process is usually NOT the one that owns the zgui
+        // socket (a separate `serve` daemon does), so pub/sub alone reaches no subscriber there.
+        // Stamp the action into the file-backed KV with a monotonic nonce; background.js polls it on
+        // its sysinfo stream and runs any action it hasn't seen. `App::open("zwire")->call("browser.*")`
+        // then works regardless of which host answered the socket.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let mut kv = payload.as_object().cloned().unwrap_or_default();
+        kv.insert("_n".into(), json!(nonce));
+        crate::store::kv_set("zwire", "__zbus_action", &Value::Object(kv));
+        return json!({ "ok": true, "action": action, "delivered": delivered, "forwarded": forwarded, "queued": true });
     }
     // Build the host request `{"cmd":verb, …args, "id":1}`.
     let mut obj = serde_json::Map::new();
