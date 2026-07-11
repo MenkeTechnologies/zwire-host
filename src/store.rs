@@ -34,6 +34,18 @@ pub const SCHEMES: &[&str] = &[
     "vapor",
 ];
 
+/// True for a built-in scheme name OR a custom-scheme marker (`custom` / `custom-N`).
+/// A custom scheme carries its colours in `[theme.palette]` (synced separately); the
+/// `scheme` name only records that a custom (vs built-in) scheme is active, so consumers
+/// apply the palette instead of a baked table. Accepting these here is what lets a custom
+/// scheme PERSIST — otherwise the write is rejected and a poll reverts to the last built-in.
+pub fn is_valid_scheme(s: &str) -> bool {
+    SCHEMES.contains(&s)
+        || s == "custom"
+        || s.strip_prefix("custom-")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// The user's home directory, falling back to `.` so we never panic on a
 /// stripped environment. `USERPROFILE` covers Windows.
 pub fn home() -> PathBuf {
@@ -218,8 +230,10 @@ pub fn kv_keys(app: &str) -> Vec<String> {
 //   [theme.palette]          # RESOLVED active colours (var → hex) — the canonical
 //   --accent = "#ff2a6d"     # colour source; consumers read exact hex without the
 //   --bg-primary = "#05050a" # baked scheme tables, and custom/edited palettes sync
-//   [schemes.mytheme]        # custom colourschemes, human-editable
-//   --bg-primary = "#0a0d16"
+//   [[theme.schemes]]        # the saved custom-scheme LIBRARY (ordered), shared so
+//   name = "My Theme"        # every fleet surface sees the same named schemes
+//   [theme.schemes.vars]     # each scheme's full colour map (var → hex)
+//   --accent = "#0a0d16"
 
 /// The shared theme directory (`~/.zwire`, overridable via `$ZWIRE_GLOBAL_DIR`).
 /// App-independent on purpose: this is the fleet's single theme location.
@@ -376,6 +390,39 @@ pub fn write_ui(d: &Path, partial: &Value) -> Value {
     ui
 }
 
+/// Create `global.toml` with a default theme when it's absent, so consumers
+/// (zemacs and the rest of the fleet) always have a file to read on a fresh
+/// machine — called once at host startup. The dir is created by [`theme_dir`].
+/// Never clobbers an existing file. The palette is left for the HUD to fill on
+/// first paint (the host has no colour tables); scheme + light are enough to
+/// theme the fleet from launch.
+pub fn ensure_global(d: &Path) {
+    if global_path(d).exists() {
+        return;
+    }
+    with_global_lock(d, || {
+        if global_path(d).exists() {
+            return; // another host process seeded it while we waited on the lock
+        }
+        let mut root = toml::Value::Table(Default::default());
+        set_path(
+            &mut root,
+            &["theme", "scheme"],
+            toml::Value::String("cyberpunk".into()),
+        );
+        set_path(
+            &mut root,
+            &["theme", "ui", "light"],
+            toml::Value::Boolean(false),
+        );
+        save_global(d, &root);
+    });
+    // Plain projections the native chrome watches, so a first-run browser paints
+    // the default immediately without waiting for a HUD write.
+    write_atomic(&d.join("hud-scheme"), b"cyberpunk\n");
+    write_hud_light(d, false);
+}
+
 /// Current resolved colour palette (`[theme.palette]`; empty object when unset).
 /// This is the fleet's canonical colour source: a CSS-var → hex map for the
 /// active scheme + light/dark, so any consumer (zemacs, a Vivaldi mod, a plain
@@ -408,9 +455,64 @@ pub fn write_palette(d: &Path, palette: &Value) -> Value {
     obj
 }
 
+/// The user's saved custom-scheme LIBRARY (`[theme.schemes]`, an ordered array of
+/// `{ name, vars }`), or an empty array when none. This is the shared home for every
+/// named custom colourscheme — so a scheme saved in one surface (the HUD settings)
+/// is visible to the whole fleet, not just the origin that created it.
+pub fn current_schemes(d: &Path) -> Value {
+    load_global(d)
+        .get("theme")
+        .and_then(|t| t.get("schemes"))
+        .and_then(|s| serde_json::to_value(s).ok())
+        .filter(|v| v.is_array())
+        .unwrap_or_else(|| json!([]))
+}
+
+/// Persist the saved-scheme library to `[theme.schemes]`, replacing the previous one.
+/// Preserves the active scheme + palette + ui. Returns the stored array (empty when
+/// the input wasn't an array). Each element is `{ name: String, vars: {css-var: hex} }`.
+pub fn write_schemes(d: &Path, schemes: &Value) -> Value {
+    let arr = if schemes.is_array() {
+        schemes.clone()
+    } else {
+        json!([])
+    };
+    with_global_lock(d, || {
+        let mut root = load_global(d);
+        let s_toml =
+            toml::Value::try_from(&arr).unwrap_or_else(|_| toml::Value::Array(Default::default()));
+        set_path(&mut root, &["theme", "schemes"], s_toml);
+        save_global(d, &root);
+    });
+    arr
+}
+
 /// Plain `hud-light` text projection ("1"/"0") beside `hud-scheme`, so the native
 /// C++ chrome can follow light mode with a tiny FilePathWatcher (no TOML parse) —
 /// mirroring how `hud-scheme` projects the colour scheme.
 fn write_hud_light(d: &Path, light: bool) {
     write_atomic(&d.join("hud-light"), if light { b"1\n" } else { b"0\n" });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_valid_scheme_accepts_builtins_and_custom_markers() {
+        // built-ins
+        for s in SCHEMES {
+            assert!(is_valid_scheme(s), "built-in {s} should be valid");
+        }
+        // custom markers: the live custom + numbered saved presets
+        assert!(is_valid_scheme("custom"));
+        assert!(is_valid_scheme("custom-0"));
+        assert!(is_valid_scheme("custom-12"));
+        // rejects: unknown names + malformed custom markers (so a typo can't poison the file)
+        assert!(!is_valid_scheme("bogus"));
+        assert!(!is_valid_scheme("custom-"));
+        assert!(!is_valid_scheme("custom-x"));
+        assert!(!is_valid_scheme("custom-1a"));
+        assert!(!is_valid_scheme(""));
+    }
 }

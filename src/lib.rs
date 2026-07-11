@@ -203,13 +203,18 @@ pub fn run(args: Vec<String>) {
     zbus::start();
 
     match positional.first().map(String::as_str) {
-        Some("serve") => transport::serve(transport::ServeConfig {
-            socket,
-            tcp,
-            token,
-            name,
-            peers,
-        }),
+        Some("serve") => {
+            // Seed ~/.zwire/global.toml on a fresh machine so the fleet has a
+            // theme file to read (never clobbers an existing one).
+            crate::store::ensure_global(&crate::store::theme_dir());
+            transport::serve(transport::ServeConfig {
+                socket,
+                tcp,
+                token,
+                name,
+                peers,
+            })
+        }
         Some("call") => {
             let rest = positional[1..].join(" ");
             let request = if rest.trim().is_empty() {
@@ -228,6 +233,11 @@ pub fn run(args: Vec<String>) {
             print!("{}", usage());
         }
         // `stdio`, no args, or Chrome's origin argument → native messaging.
-        _ => transport::stdio(),
+        _ => {
+            // Seed ~/.zwire/global.toml on a fresh machine (the browser launches
+            // this stdio host on every start); never clobbers an existing one.
+            crate::store::ensure_global(&crate::store::theme_dir());
+            transport::stdio()
+        }
     }
 }

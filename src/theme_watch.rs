@@ -19,10 +19,10 @@ use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-// Last (scheme, ui, palette) THIS process saw, for echo suppression.
-fn last() -> &'static Mutex<(String, Value, Value)> {
-    static L: OnceLock<Mutex<(String, Value, Value)>> = OnceLock::new();
-    L.get_or_init(|| Mutex::new((String::new(), Value::Null, Value::Null)))
+// Last (scheme, ui, palette, schemes) THIS process saw, for echo suppression.
+fn last() -> &'static Mutex<(String, Value, Value, Value)> {
+    static L: OnceLock<Mutex<(String, Value, Value, Value)>> = OnceLock::new();
+    L.get_or_init(|| Mutex::new((String::new(), Value::Null, Value::Null, Value::Null)))
 }
 
 /// Record the scheme this process just wrote so the watcher won't echo it.
@@ -40,6 +40,11 @@ pub fn note_palette(p: &Value) {
     last().lock().unwrap().2 = p.clone();
 }
 
+/// Record the saved-scheme library this process just wrote so the watcher won't echo it.
+pub fn note_schemes(s: &Value) {
+    last().lock().unwrap().3 = s.clone();
+}
+
 /// Start the shared-theme file watcher exactly once per process. No-op if the
 /// theme feature is never used (called from the first `sub` to a theme topic).
 pub fn ensure_started() {
@@ -54,6 +59,7 @@ pub fn ensure_started() {
         l.0 = store::current_scheme(&d);
         l.1 = store::current_ui(&d);
         l.2 = store::current_palette(&d);
+        l.3 = store::current_schemes(&d);
     }
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_millis(700));
@@ -61,9 +67,10 @@ pub fn ensure_started() {
         let scheme = store::current_scheme(&d);
         let ui = store::current_ui(&d);
         let palette = store::current_palette(&d);
+        let schemes = store::current_schemes(&d);
         // Decide what changed under the lock, then release it BEFORE publishing so
         // we never hold `last` across the bus fan-out.
-        let (pub_scheme, pub_ui, pub_palette) = {
+        let (pub_scheme, pub_ui, pub_palette, pub_schemes) = {
             let mut l = last().lock().unwrap();
             let ps = l.0 != scheme;
             if ps {
@@ -77,7 +84,11 @@ pub fn ensure_started() {
             if pp {
                 l.2 = palette.clone();
             }
-            (ps, pu, pp)
+            let psc = l.3 != schemes;
+            if psc {
+                l.3 = schemes.clone();
+            }
+            (ps, pu, pp, psc)
         };
         if pub_scheme {
             bus::publish("scheme", &json!({ "scheme": scheme }));
@@ -87,6 +98,9 @@ pub fn ensure_started() {
         }
         if pub_palette {
             bus::publish("palette", &palette);
+        }
+        if pub_schemes {
+            bus::publish("schemes", &schemes);
         }
     });
 }

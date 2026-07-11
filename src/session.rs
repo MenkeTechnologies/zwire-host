@@ -131,7 +131,8 @@ impl Session {
         let has_ui = !msg["ui"].is_null();
         let has_scheme = msg["scheme"].as_str().is_some();
         let has_palette = msg["palette"].is_object();
-        if has_ui || has_scheme || has_palette {
+        let has_schemes = msg["schemes"].is_array();
+        if has_ui || has_scheme || has_palette || has_schemes {
             let d = store::theme_dir();
             let mut resp = serde_json::Map::new();
             resp.insert("ok".to_string(), Value::Bool(true));
@@ -144,7 +145,7 @@ impl Session {
             }
             if has_scheme {
                 let s = msg["scheme"].as_str().unwrap();
-                if store::SCHEMES.contains(&s) {
+                if store::is_valid_scheme(s) {
                     store::write_scheme(&d, s);
                     crate::theme_watch::note_scheme(s);
                     let data = json!({ "scheme": s });
@@ -162,6 +163,13 @@ impl Session {
                 bus::publish("palette", &p);
                 peer::broadcast("palette", &p);
                 resp.insert("palette".to_string(), p);
+            }
+            if has_schemes {
+                let s = store::write_schemes(&d, &msg["schemes"]);
+                crate::theme_watch::note_schemes(&s);
+                bus::publish("schemes", &s);
+                peer::broadcast("schemes", &s);
+                resp.insert("schemes".to_string(), s);
             }
             respond(out, msg, Value::Object(resp));
         } else {
@@ -223,7 +231,7 @@ impl Session {
                 respond(
                     out,
                     msg,
-                    json!({"ok": true, "version": crate::VERSION, "scheme": store::current_scheme(&d), "ui": store::current_ui(&d), "palette": store::current_palette(&d)}),
+                    json!({"ok": true, "version": crate::VERSION, "scheme": store::current_scheme(&d), "ui": store::current_ui(&d), "palette": store::current_palette(&d), "schemes": store::current_schemes(&d)}),
                 );
             }
 
@@ -385,6 +393,7 @@ impl Session {
                         ),
                         "ui" => bus::send_one(out, "ui", &store::current_ui(&d)),
                         "palette" => bus::send_one(out, "palette", &store::current_palette(&d)),
+                        "schemes" => bus::send_one(out, "schemes", &store::current_schemes(&d)),
                         _ => {}
                     }
                 } else {
