@@ -11,17 +11,18 @@
 //! THIS process last saw, republishes it to this process's local bus subscribers.
 //! So a toggle in Audio-Haxor fans out to the live zwire HUD, zemacs, etc.
 //!
-//! Echo control: local writes call [`note_scheme`] / [`note_ui`] to record the
-//! value this process just wrote, so the watcher recognises its own change and
-//! doesn't re-publish it (the write path already published to local subs).
+//! Echo control: local writes call [`note_scheme`] / [`note_ui`] / [`note_palette`]
+//! to record the value this process just wrote, so the watcher recognises its own
+//! change and doesn't re-publish it (the write path already published to local subs).
 use crate::{bus, store};
 use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-fn last() -> &'static Mutex<(String, Value)> {
-    static L: OnceLock<Mutex<(String, Value)>> = OnceLock::new();
-    L.get_or_init(|| Mutex::new((String::new(), Value::Null)))
+// Last (scheme, ui, palette) THIS process saw, for echo suppression.
+fn last() -> &'static Mutex<(String, Value, Value)> {
+    static L: OnceLock<Mutex<(String, Value, Value)>> = OnceLock::new();
+    L.get_or_init(|| Mutex::new((String::new(), Value::Null, Value::Null)))
 }
 
 /// Record the scheme this process just wrote so the watcher won't echo it.
@@ -32,6 +33,11 @@ pub fn note_scheme(s: &str) {
 /// Record the ui this process just wrote so the watcher won't echo it.
 pub fn note_ui(ui: &Value) {
     last().lock().unwrap().1 = ui.clone();
+}
+
+/// Record the palette this process just wrote so the watcher won't echo it.
+pub fn note_palette(p: &Value) {
+    last().lock().unwrap().2 = p.clone();
 }
 
 /// Start the shared-theme file watcher exactly once per process. No-op if the
@@ -47,15 +53,17 @@ pub fn ensure_started() {
         let mut l = last().lock().unwrap();
         l.0 = store::current_scheme(&d);
         l.1 = store::current_ui(&d);
+        l.2 = store::current_palette(&d);
     }
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_millis(700));
         let d = store::theme_dir();
         let scheme = store::current_scheme(&d);
         let ui = store::current_ui(&d);
+        let palette = store::current_palette(&d);
         // Decide what changed under the lock, then release it BEFORE publishing so
         // we never hold `last` across the bus fan-out.
-        let (pub_scheme, pub_ui) = {
+        let (pub_scheme, pub_ui, pub_palette) = {
             let mut l = last().lock().unwrap();
             let ps = l.0 != scheme;
             if ps {
@@ -65,13 +73,20 @@ pub fn ensure_started() {
             if pu {
                 l.1 = ui.clone();
             }
-            (ps, pu)
+            let pp = l.2 != palette;
+            if pp {
+                l.2 = palette.clone();
+            }
+            (ps, pu, pp)
         };
         if pub_scheme {
             bus::publish("scheme", &json!({ "scheme": scheme }));
         }
         if pub_ui {
             bus::publish("ui", &ui);
+        }
+        if pub_palette {
+            bus::publish("palette", &palette);
         }
     });
 }

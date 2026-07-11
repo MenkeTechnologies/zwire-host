@@ -215,8 +215,11 @@ pub fn kv_keys(app: &str) -> Vec<String> {
 //   [theme.ui]
 //   light = false
 //   scanlines = true
+//   [theme.palette]          # RESOLVED active colours (var → hex) — the canonical
+//   --accent = "#ff2a6d"     # colour source; consumers read exact hex without the
+//   --bg-primary = "#05050a" # baked scheme tables, and custom/edited palettes sync
 //   [schemes.mytheme]        # custom colourschemes, human-editable
-//   "--bg-primary" = "#0a0d16"
+//   --bg-primary = "#0a0d16"
 
 /// The shared theme directory (`~/.zwire`, overridable via `$ZWIRE_GLOBAL_DIR`).
 /// App-independent on purpose: this is the fleet's single theme location.
@@ -371,6 +374,38 @@ pub fn write_ui(d: &Path, partial: &Value) -> Value {
         ui.get("light").and_then(|v| v.as_bool()).unwrap_or(false),
     );
     ui
+}
+
+/// Current resolved colour palette (`[theme.palette]`; empty object when unset).
+/// This is the fleet's canonical colour source: a CSS-var → hex map for the
+/// active scheme + light/dark, so any consumer (zemacs, a Vivaldi mod, a plain
+/// script) reads exact colours here without needing zgui's baked scheme tables.
+pub fn current_palette(d: &Path) -> Value {
+    load_global(d)
+        .get("theme")
+        .and_then(|t| t.get("palette"))
+        .and_then(|p| serde_json::to_value(p).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| json!({}))
+}
+
+/// Persist the resolved active palette (CSS-var → hex map) to `[theme.palette]`,
+/// replacing the previous one. Preserves scheme + ui + custom `[schemes.*]`.
+/// Returns the stored object (empty when the input wasn't an object).
+pub fn write_palette(d: &Path, palette: &Value) -> Value {
+    let obj = if palette.is_object() {
+        palette.clone()
+    } else {
+        json!({})
+    };
+    with_global_lock(d, || {
+        let mut root = load_global(d);
+        let p_toml =
+            toml::Value::try_from(&obj).unwrap_or_else(|_| toml::Value::Table(Default::default()));
+        set_path(&mut root, &["theme", "palette"], p_toml);
+        save_global(d, &root);
+    });
+    obj
 }
 
 /// Plain `hud-light` text projection ("1"/"0") beside `hud-scheme`, so the native

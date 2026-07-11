@@ -116,6 +116,42 @@ fn get_returns_scheme_and_ui() {
 }
 
 #[test]
+fn palette_write_persists_and_get_returns_it() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+
+    // Combined commandless write: scheme + ui + resolved palette in ONE message.
+    // Exercises the merged-response path and the TOML round-trip of "--"-prefixed
+    // var keys with "#hex" values.
+    nm_send(
+        &mut si,
+        &json!({
+            "scheme": "midnight",
+            "ui": { "light": true },
+            "palette": { "--accent": "#ff2a6d", "--bg-primary": "#05050a" }
+        }),
+    );
+    let w = nm_recv(&mut so).expect("a write reply");
+    assert_eq!(w["ok"], json!(true), "combined write ok: {w}");
+    assert_eq!(w["scheme"], json!("midnight"), "scheme echoed: {w}");
+    assert_eq!(w["ui"]["light"], json!(true), "ui echoed: {w}");
+    assert_eq!(w["palette"]["--accent"], json!("#ff2a6d"), "palette echoed: {w}");
+
+    // A fresh `get` must return the palette persisted to global.toml, verbatim.
+    nm_send(&mut si, &json!({"cmd": "get"}));
+    let g = nm_recv(&mut so).expect("a get reply");
+    assert_eq!(g["scheme"], json!("midnight"), "scheme persisted: {g}");
+    assert!(g["palette"].is_object(), "palette present: {g}");
+    assert_eq!(g["palette"]["--accent"], json!("#ff2a6d"), "accent persisted: {g}");
+    assert_eq!(g["palette"]["--bg-primary"], json!("#05050a"), "bg persisted: {g}");
+
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
 fn hello_advertises_caps() {
     let home = temp_home();
     let mut child = spawn_stdio(&home);

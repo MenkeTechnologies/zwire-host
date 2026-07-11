@@ -30,6 +30,7 @@ pub fn caps() -> Vec<&'static str> {
         "hostinfo",
         "scheme",
         "ui",
+        "palette",
     ];
     #[cfg(feature = "sysinfo-caps")]
     {
@@ -122,17 +123,47 @@ impl Session {
             self.handle_cmd(out, msg, cmd);
             return;
         }
-        // Legacy commandless messages: {ui:{…}} and {scheme:"…"}.
-        if !msg["ui"].is_null() {
-            let ui = store::write_ui(&store::theme_dir(), &msg["ui"]);
-            // Notify local subscribers and every peer so all apps on all
-            // machines keep their UI prefs in sync live.
-            crate::theme_watch::note_ui(&ui); // record our own write so the watcher won't echo it
-            bus::publish("ui", &ui);
-            peer::broadcast("ui", &ui);
-            respond(out, msg, json!({"ok": true, "ui": ui}));
-        } else if let Some(s) = msg["scheme"].as_str() {
-            self.set_scheme(out, msg, s);
+        // Legacy commandless theme writes: {ui:{…}}, {scheme:"…"}, {palette:{…}} —
+        // any one, or combined ({scheme, ui, palette} in one message). Every present
+        // field is written, published to local subscribers, and broadcast to peers
+        // so all apps on all machines stay in sync live. The response merges each
+        // field, so a single-field write keeps its historical shape.
+        let has_ui = !msg["ui"].is_null();
+        let has_scheme = msg["scheme"].as_str().is_some();
+        let has_palette = msg["palette"].is_object();
+        if has_ui || has_scheme || has_palette {
+            let d = store::theme_dir();
+            let mut resp = serde_json::Map::new();
+            resp.insert("ok".to_string(), Value::Bool(true));
+            if has_ui {
+                let ui = store::write_ui(&d, &msg["ui"]);
+                crate::theme_watch::note_ui(&ui); // record our own write so the watcher won't echo it
+                bus::publish("ui", &ui);
+                peer::broadcast("ui", &ui);
+                resp.insert("ui".to_string(), ui);
+            }
+            if has_scheme {
+                let s = msg["scheme"].as_str().unwrap();
+                if store::SCHEMES.contains(&s) {
+                    store::write_scheme(&d, s);
+                    crate::theme_watch::note_scheme(s);
+                    let data = json!({ "scheme": s });
+                    bus::publish("scheme", &data);
+                    peer::broadcast("scheme", &data);
+                    resp.insert("scheme".to_string(), Value::String(s.to_string()));
+                } else {
+                    resp.insert("ok".to_string(), Value::Bool(false));
+                    resp.insert("err".to_string(), Value::String("bad_scheme".to_string()));
+                }
+            }
+            if has_palette {
+                let p = store::write_palette(&d, &msg["palette"]);
+                crate::theme_watch::note_palette(&p);
+                bus::publish("palette", &p);
+                peer::broadcast("palette", &p);
+                resp.insert("palette".to_string(), p);
+            }
+            respond(out, msg, Value::Object(resp));
         } else {
             respond(out, msg, json!({"ok": false, "err": "empty"}));
         }
@@ -192,7 +223,7 @@ impl Session {
                 respond(
                     out,
                     msg,
-                    json!({"ok": true, "version": crate::VERSION, "scheme": store::current_scheme(&d), "ui": store::current_ui(&d)}),
+                    json!({"ok": true, "version": crate::VERSION, "scheme": store::current_scheme(&d), "ui": store::current_ui(&d), "palette": store::current_palette(&d)}),
                 );
             }
 
@@ -336,7 +367,7 @@ impl Session {
                     respond(out, msg, json!({"ok": true, "topic": topic}));
                     // Live cross-process theme sync: once anyone cares about the
                     // theme topics, start the shared-file watcher (idempotent).
-                    if topic == "ui" || topic == "scheme" {
+                    if topic == "ui" || topic == "scheme" || topic == "palette" {
                         crate::theme_watch::ensure_started();
                     }
                     // Snapshot-on-subscribe for the theme topics: hand the new
@@ -353,6 +384,7 @@ impl Session {
                             &json!({ "scheme": store::current_scheme(&d) }),
                         ),
                         "ui" => bus::send_one(out, "ui", &store::current_ui(&d)),
+                        "palette" => bus::send_one(out, "palette", &store::current_palette(&d)),
                         _ => {}
                     }
                 } else {
@@ -497,21 +529,6 @@ impl Session {
             _ => {
                 let _ = send_msg(out, &json!({"ok": false, "err": "unknown_cmd", "cmd": cmd}));
             }
-        }
-    }
-
-    fn set_scheme(&self, out: &Out, msg: &Value, s: &str) {
-        if store::SCHEMES.contains(&s) {
-            store::write_scheme(&store::theme_dir(), s);
-            // Push the change to every local subscriber and every peer for live
-            // cross-app, cross-machine theme sync.
-            crate::theme_watch::note_scheme(s); // record our own write so the watcher won't echo it
-            let data = json!({ "scheme": s });
-            bus::publish("scheme", &data);
-            peer::broadcast("scheme", &data);
-            respond(out, msg, json!({"ok": true, "scheme": s}));
-        } else {
-            respond(out, msg, json!({"ok": false, "err": "bad_scheme"}));
         }
     }
 }
