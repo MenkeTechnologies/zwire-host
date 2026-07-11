@@ -207,8 +207,9 @@ fn public_ip() -> Option<String> {
         .filter(|b| !b.is_empty())
 }
 
-/// `{"p": percent, "c": on-AC-or-charging}` for the primary battery, or `None`
-/// when the machine has no battery (desktop/VM). Each OS reads its native power
+/// `{"p": percent, "c": actively-charging, "ac": on-external-power}` for the primary battery, or
+/// `None` when the machine has no battery (desktop/VM). `c` and `ac` are kept apart so the bar draws
+/// the plug (🔌) — not the charging bolt (⚡) — when plugged in but full. Each OS reads its native
 /// source: `pmset` on macOS, sysfs on Linux, `GetSystemPowerStatus` on Windows.
 #[cfg(target_os = "macos")]
 fn battery() -> Option<Value> {
@@ -223,8 +224,12 @@ fn battery() -> Option<Value> {
         .map(|i| i + 1)
         .unwrap_or(0);
     let pct: i64 = s[start..idx].parse().ok()?;
-    let c = s.contains("AC Power") || s.contains("charging") || s.contains("charged");
-    Some(json!({"p": pct, "c": c}))
+    // Match "; charging" (with the leading "; ") so it does NOT also match "disCHARGING" — the old
+    // `contains("charging")` was true on battery too, pinning the ⚡ bolt on permanently.
+    // "charged"/"AC attached" = plugged-but-full → `ac` only.
+    let charging = s.contains("; charging") || s.contains("finishing charge");
+    let ac = charging || s.contains("AC Power") || s.contains("AC attached") || s.contains("charged");
+    Some(json!({"p": pct, "c": charging, "ac": ac}))
 }
 
 /// Read the first `type == Battery` under `/sys/class/power_supply` for its
@@ -235,6 +240,7 @@ fn battery() -> Option<Value> {
     use std::fs;
     let dir = fs::read_dir("/sys/class/power_supply").ok()?;
     let mut pct: Option<i64> = None;
+    let mut charging = false;
     let mut on_ac = false;
     for entry in dir.flatten() {
         let p = entry.path();
@@ -246,9 +252,14 @@ fn battery() -> Option<Value> {
                         .ok()
                         .and_then(|c| c.trim().parse().ok());
                 }
-                let status = fs::read_to_string(p.join("status")).unwrap_or_default();
-                if matches!(status.trim(), "Charging" | "Full") {
-                    on_ac = true;
+                // Only "Charging" is actively charging; "Full" means plugged-but-topped-off → on AC.
+                match fs::read_to_string(p.join("status")).unwrap_or_default().trim() {
+                    "Charging" => {
+                        charging = true;
+                        on_ac = true;
+                    }
+                    "Full" => on_ac = true,
+                    _ => {}
                 }
             }
             "Mains" if fs::read_to_string(p.join("online")).is_ok_and(|s| s.trim() == "1") => {
@@ -257,7 +268,7 @@ fn battery() -> Option<Value> {
             _ => {}
         }
     }
-    Some(json!({"p": pct?, "c": on_ac}))
+    Some(json!({"p": pct?, "c": charging, "ac": on_ac}))
 }
 
 /// `GetSystemPowerStatus` (kernel32) fills a `SYSTEM_POWER_STATUS`; `BatteryFlag`
@@ -292,7 +303,9 @@ fn battery() -> Option<Value> {
     if s.battery_flag == 128 || s.battery_life_percent == 255 {
         return None; // no battery, or percent unknown
     }
-    Some(json!({"p": s.battery_life_percent as i64, "c": s.ac_line_status == 1}))
+    // BatteryFlag bit 3 (8) = charging; AcLineStatus 1 = on wall power.
+    let charging = s.battery_flag & 8 != 0;
+    Some(json!({"p": s.battery_life_percent as i64, "c": charging, "ac": s.ac_line_status == 1}))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
