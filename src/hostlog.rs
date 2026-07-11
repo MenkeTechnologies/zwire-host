@@ -76,10 +76,15 @@ pub fn record(dir: &str, req: &Value, data: &Value) {
     let path = log_path();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
-        .append(true) // O_APPEND: per-line atomic across processes
+        .append(true)
         .open(&path)
     {
-        let _ = writeln!(f, "{entry}");
+        // Format the ENTIRE line (incl. newline) into one buffer, then a single write_all → one
+        // write() syscall, which O_APPEND makes atomic across processes. `writeln!(f, "{entry}")`
+        // does NOT: it formats the JSON field-by-field, one write() per piece, so concurrent
+        // zwire-host processes interleave fields and corrupt lines ({"{cmd""cmd:"…).
+        let line = format!("{entry}\n");
+        let _ = f.write_all(line.as_bytes());
     }
     if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_BYTES {
         trim(&path);
