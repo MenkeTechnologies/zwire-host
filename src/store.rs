@@ -351,6 +351,9 @@ pub fn write_scheme(d: &Path, s: &str) {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     write_hud_light(d, light);
+    // Keep the base-colour projection current for the freshly-selected scheme too, so a
+    // browser that only sees `hud-scheme`/`hud-palette` change still paints the right base.
+    write_hud_palette(d, &current_palette(d));
     // Transitional: also write the legacy per-app location (`<app-data>/zwire/
     // hud-scheme`) that a browser built BEFORE the ~/.zwire C++ patch reads, so
     // window-chrome colouring keeps working until that browser is rebuilt.
@@ -452,6 +455,9 @@ pub fn write_palette(d: &Path, palette: &Value) -> Value {
         set_path(&mut root, &["theme", "palette"], p_toml);
         save_global(d, &root);
     });
+    // Refresh the native chrome's base-colour projection so tabs/toolbar/omnibox follow
+    // the exact resolved colours — the same for a custom scheme as a built-in.
+    write_hud_palette(d, &obj);
     obj
 }
 
@@ -494,6 +500,51 @@ fn write_hud_light(d: &Path, light: bool) {
     write_atomic(&d.join("hud-light"), if light { b"1\n" } else { b"0\n" });
 }
 
+/// The base tokens the native chrome paints from (frame/toolbar/tab/omnibox + accents).
+/// Order is irrelevant — the projection is keyed — but this is the set the C++ reads.
+const HUD_PALETTE_KEYS: [&str; 10] = [
+    "--bg-primary",
+    "--bg-secondary",
+    "--bg-card",
+    "--bg-hover",
+    "--text",
+    "--text-dim",
+    "--accent",
+    "--cyan",
+    "--magenta",
+    "--border",
+];
+
+/// `hud-palette` text projection beside `hud-scheme`: the RESOLVED base colours of the
+/// active scheme as `--var=#rrggbb` lines. This lets the native chrome paint ANY scheme
+/// — built-in OR custom — straight from the real colours, with no baked scheme table and
+/// no TOML parser (the whole point of the text projections). The chrome reads whichever
+/// keys it knows and ignores the rest; an empty/absent file leaves it on its fallback.
+/// Every consumer already mirrors the active scheme's resolved palette into
+/// `[theme.palette]`, so this stays in lockstep with what the fleet actually shows.
+fn write_hud_palette(d: &Path, palette: &Value) {
+    let obj = match palette.as_object() {
+        Some(o) if !o.is_empty() => o,
+        _ => return, // no resolved palette yet — don't clobber a good projection with nothing
+    };
+    let mut out = String::new();
+    for k in HUD_PALETTE_KEYS {
+        if let Some(hex) = obj.get(k).and_then(|v| v.as_str()) {
+            let hex = hex.trim();
+            // Only project plain #rrggbb hex — the native parser is deliberately tiny.
+            if hex.starts_with('#') && hex.len() == 7 {
+                out.push_str(k);
+                out.push('=');
+                out.push_str(hex);
+                out.push('\n');
+            }
+        }
+    }
+    if !out.is_empty() {
+        write_atomic(&d.join("hud-palette"), out.as_bytes());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,5 +565,37 @@ mod tests {
         assert!(!is_valid_scheme("custom-x"));
         assert!(!is_valid_scheme("custom-1a"));
         assert!(!is_valid_scheme(""));
+    }
+
+    #[test]
+    fn write_hud_palette_projects_base_hex_and_skips_non_hex() {
+        let d = std::env::temp_dir().join(format!("zwire-hudpal-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let pal = json!({
+            "--bg-primary": "#05050a",
+            "--accent": "#ff2a6d",
+            "--cyan": "#05d9e8",
+            "--magenta": "#d300c5",
+            "--border": "#1a1a3e",
+            "--text": "#e0f0ff",
+            "--accent-glow": "rgba(255, 42, 109, 0.4)", // rgba → skipped (tiny native parser)
+            "--bogus": "notacolor",                     // unknown key → not projected
+        });
+        write_hud_palette(&d, &pal);
+        let out = std::fs::read_to_string(d.join("hud-palette")).unwrap();
+        assert!(out.contains("--accent=#ff2a6d\n"), "accent projected");
+        assert!(out.contains("--cyan=#05d9e8\n"), "cyan projected");
+        assert!(out.contains("--bg-primary=#05050a\n"), "bg projected");
+        assert!(!out.contains("accent-glow"), "rgba variant not projected");
+        assert!(!out.contains("bogus"), "unknown key not projected");
+
+        // An empty palette must NOT clobber an existing good projection.
+        let d2 = std::env::temp_dir().join(format!("zwire-hudpal-empty-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d2);
+        write_hud_palette(&d2, &json!({}));
+        assert!(!d2.join("hud-palette").exists(), "empty palette writes nothing");
+
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&d2);
     }
 }
