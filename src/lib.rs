@@ -50,6 +50,14 @@ pub mod theme_watch;
 pub mod transport;
 pub mod watch;
 /// GUI Automation Bus endpoint — `App::open("zwire")` (native zgui-bridge protocol, no proprietary dep).
+///
+/// The bus is a Unix-domain-socket singleton daemon (temp-bind + atomic `rename` over the socket
+/// path + `flock`), so it is Unix-only; on other platforms `zbus_stub` provides no-op entry points.
+/// The host's main NDJSON protocol stays cross-platform via [`transport`] (named pipes on Windows).
+#[cfg(unix)]
+pub mod zbus;
+#[cfg(not(unix))]
+#[path = "zbus_stub.rs"]
 pub mod zbus;
 
 // Re-export the handful of types a dependent binary needs to embed the host.
