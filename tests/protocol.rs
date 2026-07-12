@@ -778,3 +778,54 @@ fn hooks_save_empty_name_gets_slug_id() {
     drop(si);
     let _ = child.wait();
 }
+
+/// The `App::open("zwire")` bus (`$TMPDIR/zgui/zwire.sock`) must be owned ONLY by a long-lived host.
+/// Regression for the intermittent `Connection refused (os error 61)`: a one-shot (`version`) used to
+/// run `zbus::start()`, bind the bus, then exit in milliseconds — leaving a stale socket that the next
+/// `App::open` connect refused. Here: (a) a one-shot never creates the bus, and (b) a one-shot run
+/// while a `serve` host owns the bus adopts it and leaves it connectable (no clobber).
+#[test]
+fn zgui_bus_owned_only_by_long_lived_host() {
+    use std::os::unix::net::UnixStream;
+
+    // Isolated bus root so this never races the developer's real `$TMPDIR/zgui/zwire.sock`.
+    let bus_root = temp_home();
+    let bus_sock = bus_root.join("zgui").join("zwire.sock");
+    // socket_dir() prefers XDG_RUNTIME_DIR, else TMPDIR — pin it to our temp dir for both children.
+    let run = |args: &[&str]| {
+        Command::new(BIN)
+            .args(args)
+            .env("HOME", &bus_root)
+            .env("TMPDIR", &bus_root)
+            .env_remove("XDG_RUNTIME_DIR")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+
+    // (a) A one-shot must NOT bind the bus.
+    let mut oneshot = run(&["version"]);
+    let _ = oneshot.wait();
+    assert!(!bus_sock.exists(), "one-shot `version` bound the bus at {bus_sock:?}");
+
+    // (b) A long-lived `serve` host owns the bus; a concurrent one-shot must leave it connectable.
+    let hostsock = bus_root.join("host.sock");
+    let mut serve = run(&["serve", "--socket", hostsock.to_str().unwrap()]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && UnixStream::connect(&bus_sock).is_err() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(UnixStream::connect(&bus_sock).is_ok(), "serve host never bound the bus");
+
+    let mut oneshot = run(&["version"]);
+    let _ = oneshot.wait();
+    assert!(
+        UnixStream::connect(&bus_sock).is_ok(),
+        "one-shot clobbered the live bus — the exact os-error-61 regression"
+    );
+
+    let _ = serve.kill();
+    let _ = serve.wait();
+}

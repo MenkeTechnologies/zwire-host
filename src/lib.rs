@@ -196,17 +196,19 @@ pub fn run(args: Vec<String>) {
         }
     }
 
-    // Self-contained scripting + automation bus, up in every run mode (the browser launches the
-    // stdio host): extract the bundled `App` package if missing, then open the `App::open("zwire")`
-    // socket so stryke can drive the host. Both are best-effort and never block startup.
+    // Self-contained scripting: extract the bundled `App` package if missing so stryke can drive the
+    // host. Best-effort, never blocks startup. The `App::open("zwire")` bus (zbus::start) is opened
+    // ONLY by the long-lived hosts (`serve` + stdio) below — NOT here. A one-shot (`call`/`version`/
+    // `help`) that bound the bus would exit in milliseconds and leave a stale socket, so the next
+    // `App::open` gets `Connection refused (os error 61)`. One-shots are clients; they connect, never bind.
     stryke_runner::ensure_stryke_app();
-    zbus::start();
 
     match positional.first().map(String::as_str) {
         Some("serve") => {
             // Seed ~/.zwire/global.toml on a fresh machine so the fleet has a
             // theme file to read (never clobbers an existing one).
             crate::store::ensure_global(&crate::store::theme_dir());
+            zbus::start();
             transport::serve(transport::ServeConfig {
                 socket,
                 tcp,
@@ -237,6 +239,7 @@ pub fn run(args: Vec<String>) {
             // Seed ~/.zwire/global.toml on a fresh machine (the browser launches
             // this stdio host on every start); never clobbers an existing one.
             crate::store::ensure_global(&crate::store::theme_dir());
+            zbus::start();
             transport::stdio()
         }
     }

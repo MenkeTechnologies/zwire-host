@@ -383,31 +383,67 @@ fn handle_conn(stream: UnixStream) {
     }
 }
 
-/// Open the `App::open("zwire")` bus socket and serve it in the background. Called once at startup
-/// from every run mode so the bus is up whenever zwire-host is running (including the short-lived
-/// hosts a `stryke_run` spawns).
+/// Open the `App::open("zwire")` bus socket and serve it in the background. Called ONLY by the
+/// long-lived hosts (`serve` daemon + the browser's stdio host) — never by a one-shot (`call`/
+/// `version`/`help`), which would bind the bus and then exit in milliseconds, leaving a stale socket
+/// so the next `App::open` gets `Connection refused (os error 61)`. One-shots connect as clients.
 ///
 /// The BIND is SYNCHRONOUS — by the time this returns, the socket exists and is listening, so a
-/// script that runs immediately afterward (e.g. `App::open("zwire")` inside a one-shot `stryke -E`
-/// spawned by this very host) never races an unbound socket. Only the accept loop is backgrounded.
-/// Best-effort: if another zwire-host already holds a LIVE socket we adopt it (don't rebind); a stale
-/// socket from an exited host (connect → refused) is removed and rebound here.
+/// script that runs immediately afterward (e.g. `App::open("zwire")` inside a `stryke -E` this host
+/// spawns) never races an unbound socket. Only the accept loop is backgrounded.
+///
+/// The check-and-bind is SERIALIZED across every host process by an advisory `flock` on a sidecar
+/// (`serve` and stdio hosts can start together; Chrome spawns one host per native message). Without
+/// it, two starters both saw a stale socket, both `remove_file` + `bind`, and the loser's remove
+/// unlinked the WINNER's live socket path — last writer won the path, and if that writer exited the
+/// path went stale. The replace is ATOMIC: bind a private temp path, then `rename` it over the
+/// target in one step (the listener survives the rename on macOS/Linux), so there is no window where
+/// the path is missing (ENOENT) or points at a dead socket. The lock auto-releases on process exit.
 pub fn start() {
     let dir = socket_dir();
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     let sock = dir.join("zwire.sock");
-    // A live listener means another instance owns the bus — leave it be (the child connects to it).
+
+    // Hold the sidecar lock for the whole check-and-bind so no other host can rebind underneath us.
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(dir.join("zwire.sock.lock"))
+        .ok();
+    if let Some(l) = &lock {
+        let _ = l.lock(); // blocks until we hold the exclusive lock
+    }
+    let unlock = |lock: &Option<std::fs::File>| {
+        if let Some(l) = lock {
+            let _ = l.unlock();
+        }
+    };
+
+    // A live listener means another instance owns the bus — leave it be (clients connect to it). Held
+    // under the lock, this check is authoritative: nobody can rebind between here and our own bind.
     if UnixStream::connect(&sock).is_ok() {
+        unlock(&lock);
         return;
     }
-    // Otherwise the file (if any) is stale: clear it and bind ourselves, synchronously.
-    let _ = std::fs::remove_file(&sock);
-    let listener = match UnixListener::bind(&sock) {
+    // Stale or absent: bind a private temp path, then atomically rename it over the target.
+    let tmp = dir.join(format!("zwire.sock.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let listener = match UnixListener::bind(&tmp) {
         Ok(l) => l,
-        Err(_) => return,
+        Err(_) => {
+            unlock(&lock);
+            return;
+        }
     };
-    let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
+    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    if std::fs::rename(&tmp, &sock).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        unlock(&lock);
+        return;
+    }
+    unlock(&lock);
     std::thread::Builder::new()
         .name("zwire-zbus".into())
         .spawn(move || {
