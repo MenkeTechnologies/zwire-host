@@ -6,8 +6,15 @@
 //!
 //! We speak the `zgui-bridge` NDJSON wire protocol NATIVELY here rather than depending on the
 //! `zgui-bridge` crate: zwire is MIT and public, `zgui-bridge` is a private UNLICENSED crate, so a
-//! dependency would break public builds and mix licenses. zwire-host already owns Unix-socket + NDJSON
-//! framing (see `transport.rs` / `proto.rs`), so the protocol is a few frames on top of that.
+//! dependency would break public builds and mix licenses. zwire-host already owns the local-IPC +
+//! NDJSON framing (see `transport.rs` / `proto.rs`), so the protocol is a few frames on top of that.
+//!
+//! The bus is CROSS-PLATFORM: a Unix-domain socket at `$XDG_RUNTIME_DIR/zgui/zwire.sock` (else
+//! `$TMPDIR/zgui`, else `/tmp/zgui`) on macOS/Linux, and the named pipe `\\.\pipe\zwire.sock` on
+//! Windows. Both are served by a DEDICATED, detached `bus-daemon` singleton (see `ensure_daemon`);
+//! the protocol dispatch below is identical on every platform. The address matches the bus client's
+//! per-app path (`<app>.sock` → same leaf → `\\.\pipe\<app>.sock`), so client and host meet with no
+//! registry.
 //!
 //! Frames (one JSON object per line):
 //!
@@ -19,32 +26,15 @@
 //!
 //! A `call`/`get` is translated to a host request `{"cmd":<verb>, …args}` and run through the REAL
 //! [`session::Session::handle`] with a CAPTURING sink, so every host command works with zero
-//! duplication. The socket lives at `$XDG_RUNTIME_DIR/zgui/zwire.sock` (else `$TMPDIR/zgui`, else
-//! `/tmp/zgui`), matching the bus client's `socket_path`.
+//! duplication.
 
-use std::io::{self, BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::io::{self, BufRead, Write};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::{json, Value};
 
 use crate::proto::Peer;
 use crate::session::Session;
-
-/// The bus socket directory, matching the `zgui-bridge` client: `$XDG_RUNTIME_DIR/zgui`, else
-/// `$TMPDIR/zgui`, else `/tmp/zgui`.
-fn socket_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("zgui")
-}
 
 /// The command surface advertised on `App::open("zwire")->verbs()`. Comprehensive — every host
 /// command `session::handle_cmd` (+ the fs/jobs/os/procs sub-handlers) accepts, plus the
@@ -335,8 +325,8 @@ fn surface() -> Value {
     })
 }
 
-/// Frame + write one zgui-bridge reply on `w`.
-fn reply(w: &mut UnixStream, id: u64, ok: bool, value: Value, error: Option<String>) {
+/// Frame + write one zgui-bridge reply on any writer.
+fn reply<W: Write>(w: &mut W, id: u64, ok: bool, value: Value, error: Option<String>) {
     let mut r = serde_json::Map::new();
     r.insert("t".into(), json!("reply"));
     r.insert("id".into(), json!(id));
@@ -352,13 +342,9 @@ fn reply(w: &mut UnixStream, id: u64, ok: bool, value: Value, error: Option<Stri
     let _ = w.flush();
 }
 
-/// Serve one accepted bus connection: read zgui-bridge request frames, dispatch, reply.
-fn handle_conn(stream: UnixStream) {
-    let mut w = match stream.try_clone() {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let reader = BufReader::new(stream);
+/// Serve one accepted bus connection given its read + write halves: read zgui-bridge request frames,
+/// dispatch, reply. Platform-neutral — the per-platform accept loop supplies the two halves.
+fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
@@ -398,55 +384,248 @@ fn handle_conn(stream: UnixStream) {
     }
 }
 
-/// Is a live listener currently accepting on the bus socket?
-fn bus_live(sock: &std::path::Path) -> bool {
-    UnixStream::connect(sock).is_ok()
-}
+/* ---- Unix domain socket (macOS / Linux) ---- */
+#[cfg(unix)]
+mod platform {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::os::unix::process::CommandExt;
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
 
-/// Try to become the bus owner: under an advisory `flock`, if nobody is already listening, bind a
-/// private temp path and atomically `rename` it over `zwire.sock`. Returns the bound listener if WE
-/// took ownership, or `None` if another owner is already live (adopt) or the bind failed.
-///
-/// The flock SERIALIZES the check-and-bind across every process so two starters can't both bind (the
-/// loser's `remove_file` would otherwise unlink the winner's live socket — last writer wins the path).
-/// The `rename` makes the replace ATOMIC: no window where the path is missing (ENOENT) or points at a
-/// dead socket, and the listener survives the rename on macOS/Linux (verified). Lock auto-releases on
-/// return (drop of `_lock`) or process exit.
-fn bind_bus(dir: &std::path::Path, sock: &std::path::Path) -> Option<UnixListener> {
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(dir.join("zwire.sock.lock"))
-        .ok();
-    if let Some(l) = &lock {
-        let _ = l.lock(); // blocks until we hold the exclusive lock
+    /// The bus socket directory, matching the `zgui-bridge` client: `$XDG_RUNTIME_DIR/zgui`, else
+    /// `$TMPDIR/zgui`, else `/tmp/zgui`.
+    fn socket_dir() -> PathBuf {
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        base.join("zgui")
     }
-    // Held under the lock, this check is authoritative: nobody can rebind between here and our bind.
-    if bus_live(sock) {
-        return None;
-    }
-    let tmp = dir.join(format!("zwire.sock.{}.tmp", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    let listener = UnixListener::bind(&tmp).ok()?;
-    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    if std::fs::rename(&tmp, sock).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return None;
-    }
-    Some(listener)
-    // `lock` drops here → flock released. (Ownership of the socket is now the listener's, not the lock's.)
-}
 
-/// Accept bus connections forever, one thread per connection. Blocks the calling thread.
-fn accept_loop(listener: UnixListener) {
-    for conn in listener.incoming() {
-        match conn {
-            Ok(stream) => {
-                std::thread::spawn(move || handle_conn(stream));
-            }
-            Err(_) => break,
+    /// Serve one accepted connection: clone the stream for the writer, BufRead the reader.
+    fn handle_conn(stream: UnixStream) {
+        let w = match stream.try_clone() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        serve_conn(io::BufReader::new(stream), w);
+    }
+
+    /// Is a live listener currently accepting on the bus socket?
+    fn bus_live(sock: &std::path::Path) -> bool {
+        UnixStream::connect(sock).is_ok()
+    }
+
+    /// Try to become the bus owner: under an advisory `flock`, if nobody is already listening, bind a
+    /// private temp path and atomically `rename` it over `zwire.sock`. Returns the bound listener if WE
+    /// took ownership, or `None` if another owner is already live (adopt) or the bind failed.
+    ///
+    /// The flock SERIALIZES the check-and-bind across every process so two starters can't both bind (the
+    /// loser's `remove_file` would otherwise unlink the winner's live socket — last writer wins the path).
+    /// The `rename` makes the replace ATOMIC: no window where the path is missing (ENOENT) or points at a
+    /// dead socket, and the listener survives the rename on macOS/Linux (verified). Lock auto-releases on
+    /// return (drop of `_lock`) or process exit.
+    fn bind_bus(dir: &std::path::Path, sock: &std::path::Path) -> Option<UnixListener> {
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(dir.join("zwire.sock.lock"))
+            .ok();
+        if let Some(l) = &lock {
+            let _ = l.lock(); // blocks until we hold the exclusive lock
         }
+        // Held under the lock, this check is authoritative: nobody can rebind between here and our bind.
+        if bus_live(sock) {
+            return None;
+        }
+        let tmp = dir.join(format!("zwire.sock.{}.tmp", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let listener = UnixListener::bind(&tmp).ok()?;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        if std::fs::rename(&tmp, sock).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return None;
+        }
+        Some(listener)
+        // `lock` drops here → flock released. (Ownership of the socket is now the listener's, not the lock's.)
+    }
+
+    /// Accept bus connections forever, one thread per connection. Blocks the calling thread.
+    fn accept_loop(listener: UnixListener) {
+        for conn in listener.incoming() {
+            match conn {
+                Ok(stream) => {
+                    std::thread::spawn(move || handle_conn(stream));
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// Ensure the `App::open("zwire")` bus has a GUARANTEED long-lived owner, then return once it is
+    /// reachable. Called by every run mode at startup. See the crate-level `ensure_daemon` doc
+    /// for the ownership rationale (the os-error-61 fix).
+    pub fn ensure_daemon() {
+        let dir = socket_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        let sock = dir.join("zwire.sock");
+        if bus_live(&sock) {
+            return;
+        }
+        // Hermetic-test seam: when set, do the live-check but never auto-spawn, so `cargo test` (whose
+        // host-spawning helpers set this) never leaves a detached daemon on the developer's real bus.
+        // Production never sets it; the `bus-daemon` arm ignores it (it binds directly, not via here).
+        if std::env::var_os("ZWIRE_BUS_NO_DAEMON").is_some() {
+            return;
+        }
+        // Spawn the detached singleton daemon. `process_group(0)` puts it in its own group so it survives
+        // this host's exit and any signal sent to the host's group; null stdio fully detaches it.
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = Command::new(exe)
+                .arg("bus-daemon")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn();
+        }
+        // Wait (bounded) until the daemon has bound so immediate callers don't race the socket.
+        for _ in 0..200 {
+            if bus_live(&sock) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Entry point for the internal `bus-daemon` subcommand: become the bus owner and serve forever. If
+    /// another daemon already owns the bus (lost the `flock` race), exit immediately so only ONE lingers.
+    pub fn run_daemon() -> ! {
+        let dir = socket_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        let sock = dir.join("zwire.sock");
+        match bind_bus(&dir, &sock) {
+            Some(listener) => {
+                accept_loop(listener); // blocks until the listener errors
+                std::process::exit(0);
+            }
+            None => std::process::exit(0), // another daemon owns it, or bind failed
+        }
+    }
+}
+
+/* ---- named pipe (Windows) ---- */
+#[cfg(windows)]
+mod platform {
+    use super::*;
+    use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions, Stream};
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    /// `DETACHED_PROCESS`: the daemon gets no console, so it fully outlives this host (the analog of
+    /// Unix `process_group(0)` + null stdio). `CREATE_NEW_PROCESS_GROUP`: it ignores CTRL_C/CTRL_BREAK
+    /// aimed at this host's group. (Win32 `CreateProcess` dwCreationFlags.)
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+    /// The bus pipe leaf name. `to_ns_name::<GenericNamespaced>()` maps `zwire.sock` → the pipe
+    /// `\\.\pipe\zwire.sock`, matching the client's per-app leaf (`<app>.sock`). There is no
+    /// filesystem directory on Windows — the pipe is a named kernel object, not a path.
+    const PIPE_LEAF: &str = "zwire.sock";
+
+    fn pipe_name() -> io::Result<interprocess::local_socket::Name<'static>> {
+        PIPE_LEAF.to_ns_name::<GenericNamespaced>()
+    }
+
+    /// Serve one accepted connection: split the pipe stream into recv/send halves.
+    fn handle_conn(stream: Stream) {
+        let (recv, send) = stream.split();
+        serve_conn(io::BufReader::new(recv), send);
+    }
+
+    /// Is a live listener currently accepting on the bus pipe? A successful connect means an owner
+    /// exists (the pipe object is refcounted by the kernel — no stale path to mistake for a live one).
+    fn bus_live() -> bool {
+        match pipe_name() {
+            Ok(name) => Stream::connect(name).is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    /// Accept bus connections forever, one thread per connection. Blocks the calling thread.
+    fn accept_loop(listener: interprocess::local_socket::Listener) {
+        while let Ok(stream) = listener.accept() {
+            std::thread::spawn(move || handle_conn(stream));
+        }
+    }
+
+    /// Ensure the `App::open("zwire")` bus has a GUARANTEED long-lived owner, then return once it is
+    /// reachable. See the crate-level `ensure_daemon` doc for the ownership rationale.
+    pub fn ensure_daemon() {
+        if bus_live() {
+            return;
+        }
+        // Hermetic-test seam, mirroring the Unix arm: never auto-spawn a detached daemon under test.
+        if std::env::var_os("ZWIRE_BUS_NO_DAEMON").is_some() {
+            return;
+        }
+        // Spawn the detached singleton daemon. DETACHED_PROCESS + null stdio + a fresh process group
+        // fully sever it from this host, so it outlives us (the analog of the Unix `process_group(0)`).
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = Command::new(exe)
+                .arg("bus-daemon")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+                .spawn();
+        }
+        // Wait (bounded) until the daemon has bound so immediate callers don't race the pipe.
+        for _ in 0..200 {
+            if bus_live() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Entry point for the internal `bus-daemon` subcommand: become the bus owner and serve forever.
+    ///
+    /// The singleton guarantee is the OS itself: interprocess creates the first pipe instance with
+    /// `FILE_FLAG_FIRST_PIPE_INSTANCE`, so a SECOND daemon's `create_sync()` fails with
+    /// `ERROR_ACCESS_DENIED` while the first owner is live — the direct analog of the Unix `flock`.
+    /// The loser exits immediately so only ONE daemon lingers.
+    pub fn run_daemon() -> ! {
+        let name = match pipe_name() {
+            Ok(n) => n,
+            Err(_) => std::process::exit(0),
+        };
+        match ListenerOptions::new().name(name).create_sync() {
+            Ok(listener) => {
+                accept_loop(listener); // blocks until the listener errors
+                std::process::exit(0);
+            }
+            // `ERROR_ACCESS_DENIED` here = another daemon already owns the pipe (FIRST_PIPE_INSTANCE).
+            Err(_) => std::process::exit(0),
+        }
+    }
+}
+
+/* ---- platforms with neither Unix sockets nor named pipes ---- */
+#[cfg(not(any(unix, windows)))]
+mod platform {
+    /// No-op: the automation bus daemon is not available on this platform.
+    pub fn ensure_daemon() {}
+    /// No-op entry point for the internal `bus-daemon` subcommand.
+    pub fn run_daemon() -> ! {
+        std::process::exit(0);
     }
 }
 
@@ -458,58 +637,13 @@ fn accept_loop(listener: UnixListener) {
 /// and one of those would bind the bus, get adopted by the persistent `connectNative` hosts, then
 /// exit — leaving a stale socket that nobody re-bound. Instead, ownership belongs to a DEDICATED,
 /// detached `bus-daemon` singleton (the `ssh-agent`/`tmux` model): its only job is to hold the socket,
-/// so it never exits early. Any host merely spawns it if the bus isn't already live; the daemon's
-/// `flock` makes it a singleton (extra spawns adopt-and-exit).
+/// so it never exits early. Any host merely spawns it if the bus isn't already live; the singleton
+/// guard (Unix `flock`, Windows `FILE_FLAG_FIRST_PIPE_INSTANCE`) makes extra spawns adopt-and-exit.
 ///
 /// SYNCHRONOUS: after spawning we spin (bounded ~2s) until the daemon has bound, so a script that
 /// `App::open`s immediately afterward (e.g. a `stryke -E` hook this host spawns) never races an
-/// unbound socket.
-pub fn ensure_daemon() {
-    let dir = socket_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    let sock = dir.join("zwire.sock");
-    if bus_live(&sock) {
-        return;
-    }
-    // Hermetic-test seam: when set, do the live-check but never auto-spawn, so `cargo test` (whose
-    // host-spawning helpers set this) never leaves a detached daemon on the developer's real bus.
-    // Production never sets it; the `bus-daemon` arm ignores it (it binds directly, not via here).
-    if std::env::var_os("ZWIRE_BUS_NO_DAEMON").is_some() {
-        return;
-    }
-    // Spawn the detached singleton daemon. `process_group(0)` puts it in its own group so it survives
-    // this host's exit and any signal sent to the host's group; null stdio fully detaches it.
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = Command::new(exe)
-            .arg("bus-daemon")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn();
-    }
-    // Wait (bounded) until the daemon has bound so immediate callers don't race the socket.
-    for _ in 0..200 {
-        if bus_live(&sock) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
+/// unbound endpoint.
+pub use platform::ensure_daemon;
 
-/// Entry point for the internal `bus-daemon` subcommand: become the bus owner and serve forever. If
-/// another daemon already owns the bus (lost the `flock` race), exit immediately so only ONE lingers.
-pub fn run_daemon() -> ! {
-    let dir = socket_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    let sock = dir.join("zwire.sock");
-    match bind_bus(&dir, &sock) {
-        Some(listener) => {
-            accept_loop(listener); // blocks until the listener errors
-            std::process::exit(0);
-        }
-        None => std::process::exit(0), // another daemon owns it, or bind failed
-    }
-}
+/// Entry point for the internal `bus-daemon` subcommand: become the bus owner and serve forever.
+pub use platform::run_daemon;

@@ -872,8 +872,10 @@ fn hooks_save_empty_name_gets_slug_id() {
 /// nobody re-bound. Now hosts only *ensure* the daemon; it alone owns the socket and never exits early.
 /// Pins: (a) a pure one-shot never brings up the bus; (b) the daemon binds and serves; (c) a second
 /// daemon adopts the live bus and exits (singleton `flock`) without clobbering it.
-// The bus daemon is Unix-socket only (see zwire_host::zbus); the stub does
-// nothing on other platforms, so this end-to-end ownership test is unix-only.
+// The bus daemon is cross-platform (Unix socket / Windows named pipe, see zwire_host::zbus),
+// but this test pins the Unix-specific ownership mechanism (flock + atomic rename over the
+// socket path) and dials via UnixStream, so it stays unix-only. The Windows singleton path
+// (FILE_FLAG_FIRST_PIPE_INSTANCE) has no equivalent to exercise on the Linux CI.
 #[cfg(unix)]
 #[test]
 fn zgui_bus_owned_by_dedicated_daemon() {
