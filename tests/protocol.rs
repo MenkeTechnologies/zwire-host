@@ -139,15 +139,27 @@ fn palette_write_persists_and_get_returns_it() {
     assert_eq!(w["ok"], json!(true), "combined write ok: {w}");
     assert_eq!(w["scheme"], json!("midnight"), "scheme echoed: {w}");
     assert_eq!(w["ui"]["light"], json!(true), "ui echoed: {w}");
-    assert_eq!(w["palette"]["--accent"], json!("#ff2a6d"), "palette echoed: {w}");
+    assert_eq!(
+        w["palette"]["--accent"],
+        json!("#ff2a6d"),
+        "palette echoed: {w}"
+    );
 
     // A fresh `get` must return the palette persisted to global.toml, verbatim.
     nm_send(&mut si, &json!({"cmd": "get"}));
     let g = nm_recv(&mut so).expect("a get reply");
     assert_eq!(g["scheme"], json!("midnight"), "scheme persisted: {g}");
     assert!(g["palette"].is_object(), "palette present: {g}");
-    assert_eq!(g["palette"]["--accent"], json!("#ff2a6d"), "accent persisted: {g}");
-    assert_eq!(g["palette"]["--bg-primary"], json!("#05050a"), "bg persisted: {g}");
+    assert_eq!(
+        g["palette"]["--accent"],
+        json!("#ff2a6d"),
+        "accent persisted: {g}"
+    );
+    assert_eq!(
+        g["palette"]["--bg-primary"],
+        json!("#05050a"),
+        "bg persisted: {g}"
+    );
 
     drop(si);
     let _ = child.wait();
@@ -545,9 +557,14 @@ fn hooks_events_lists_catalog() {
     nm_send(&mut si, &json!({"cmd": "hooks_events"}));
     let r = nm_recv(&mut so).expect("a reply");
     assert_eq!(r["ok"], json!(true));
-    assert!(r["events"].as_array().map_or(false, |a| !a.is_empty()), "events present: {r}");
     assert!(
-        r["actions"].as_array().map_or(false, |a| a.iter().any(|v| v == "notify")),
+        r["events"].as_array().is_some_and(|a| !a.is_empty()),
+        "events present: {r}"
+    );
+    assert!(
+        r["actions"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|v| v == "notify")),
         "actions include notify: {r}"
     );
     drop(si);
@@ -560,12 +577,19 @@ fn hooks_save_list_get_roundtrip() {
     let mut child = spawn_stdio(&home);
     let mut si = child.stdin.take().unwrap();
     let mut so = child.stdout.take().unwrap();
-    nm_send(&mut si, &json!({"cmd":"hooks_save","hook":{"name":"Tabby","event":"tab-created","enabled":true}}));
+    nm_send(
+        &mut si,
+        &json!({"cmd":"hooks_save","hook":{"name":"Tabby","event":"tab-created","enabled":true}}),
+    );
     let saved = nm_recv(&mut so).expect("save reply");
     assert_eq!(saved["ok"], json!(true));
     let id = saved["hook"]["id"].as_str().expect("id").to_string();
     assert!(id.starts_with("tabby-"), "slug id: {id}");
-    assert_eq!(saved["hook"]["timeout_ms"], json!(10000), "default timeout filled");
+    assert_eq!(
+        saved["hook"]["timeout_ms"],
+        json!(10000),
+        "default timeout filled"
+    );
     nm_send(&mut si, &json!({"cmd":"hooks_list"}));
     let listed = nm_recv(&mut so).expect("list reply");
     let hooks = listed["hooks"].as_array().expect("hooks array");
@@ -573,7 +597,10 @@ fn hooks_save_list_get_roundtrip() {
     assert_eq!(hooks[0]["event"], json!("tab-created"));
     nm_send(&mut si, &json!({"cmd":"hooks_get_script","id": id}));
     let scr = nm_recv(&mut so).expect("script reply");
-    assert!(scr["code"].as_str().unwrap_or("").contains("actions"), "default script scaffolded: {scr}");
+    assert!(
+        scr["code"].as_str().unwrap_or("").contains("actions"),
+        "default script scaffolded: {scr}"
+    );
     drop(si);
     let _ = child.wait();
 }
@@ -584,16 +611,31 @@ fn hooks_enable_toggle_and_delete() {
     let mut child = spawn_stdio(&home);
     let mut si = child.stdin.take().unwrap();
     let mut so = child.stdout.take().unwrap();
-    nm_send(&mut si, &json!({"cmd":"hooks_save","hook":{"name":"X","event":"navigation","enabled":false}}));
-    let id = nm_recv(&mut so).unwrap()["hook"]["id"].as_str().unwrap().to_string();
-    nm_send(&mut si, &json!({"cmd":"hooks_set_enabled","id": id, "enabled": true}));
+    nm_send(
+        &mut si,
+        &json!({"cmd":"hooks_save","hook":{"name":"X","event":"navigation","enabled":false}}),
+    );
+    let id = nm_recv(&mut so).unwrap()["hook"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    nm_send(
+        &mut si,
+        &json!({"cmd":"hooks_set_enabled","id": id, "enabled": true}),
+    );
     assert_eq!(nm_recv(&mut so).unwrap()["ok"], json!(true));
     nm_send(&mut si, &json!({"cmd":"hooks_list"}));
-    assert_eq!(nm_recv(&mut so).unwrap()["hooks"][0]["enabled"], json!(true));
+    assert_eq!(
+        nm_recv(&mut so).unwrap()["hooks"][0]["enabled"],
+        json!(true)
+    );
     nm_send(&mut si, &json!({"cmd":"hooks_delete","id": id}));
     assert_eq!(nm_recv(&mut so).unwrap()["ok"], json!(true));
     nm_send(&mut si, &json!({"cmd":"hooks_list"}));
-    assert_eq!(nm_recv(&mut so).unwrap()["hooks"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        nm_recv(&mut so).unwrap()["hooks"].as_array().unwrap().len(),
+        0
+    );
     drop(si);
     let _ = child.wait();
 }
@@ -609,10 +651,20 @@ fn stryke_run_executes_inline_or_reports_missing() {
     nm_send(&mut si, &json!({"cmd":"stryke_run","code":"p 6 * 7"}));
     let r = nm_recv(&mut so).expect("a reply");
     if r["ok"] == json!(true) {
-        assert!(r["stdout"].as_str().unwrap_or("").contains("42"), "stryke ran: {r}");
+        assert!(
+            r["stdout"].as_str().unwrap_or("").contains("42"),
+            "stryke ran: {r}"
+        );
         assert_eq!(r["code"], json!(0));
     } else {
-        assert!(r["err"].as_str().unwrap_or("").to_lowercase().contains("stryke"), "clean missing-binary error: {r}");
+        assert!(
+            r["err"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("stryke"),
+            "clean missing-binary error: {r}"
+        );
     }
     drop(si);
     let _ = child.wait();
@@ -628,7 +680,10 @@ fn hooks_persist_across_host_processes() {
         let mut a = spawn_stdio(&home);
         let mut si = a.stdin.take().unwrap();
         let mut so = a.stdout.take().unwrap();
-        nm_send(&mut si, &json!({"cmd":"hooks_save","hook":{"name":"Persist","event":"host-ready","enabled":true}}));
+        nm_send(
+            &mut si,
+            &json!({"cmd":"hooks_save","hook":{"name":"Persist","event":"host-ready","enabled":true}}),
+        );
         assert_eq!(nm_recv(&mut so).unwrap()["ok"], json!(true));
         drop(si);
         let _ = a.wait();
@@ -655,7 +710,10 @@ fn stryke_lsp_send_without_start_errors() {
     nm_send(&mut si, &json!({"cmd":"stryke_lsp_send","message":"{}"}));
     let r = nm_recv(&mut so).expect("a reply");
     assert_eq!(r["ok"], json!(false));
-    assert!(r["err"].as_str().unwrap_or("").contains("not running"), "guard msg: {r}");
+    assert!(
+        r["err"].as_str().unwrap_or("").contains("not running"),
+        "guard msg: {r}"
+    );
     drop(si);
     let _ = child.wait();
 }
@@ -701,7 +759,11 @@ fn stryke_lsp_start_stop_cycle() {
         assert_eq!(stop["ok"], json!(true), "stop after start: {stop}");
     } else {
         assert!(
-            start["err"].as_str().unwrap_or("").to_lowercase().contains("stryke"),
+            start["err"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("stryke"),
             "clean missing-binary error: {start}"
         );
         // Even after a failed start, stop stays a clean no-op.
@@ -726,12 +788,16 @@ fn stryke_run_reports_error_for_bad_code() {
     if r["ok"] == json!(true) {
         assert_eq!(r["timedOut"], json!(false), "should not time out: {r}");
         // A compile failure surfaces as a non-zero exit code and/or stderr.
-        let nonzero = r["code"].as_i64().map_or(false, |c| c != 0);
+        let nonzero = r["code"].as_i64().is_some_and(|c| c != 0);
         let has_stderr = !r["stderr"].as_str().unwrap_or("").is_empty();
         assert!(nonzero || has_stderr, "bad code flagged an error: {r}");
     } else {
         assert!(
-            r["err"].as_str().unwrap_or("").to_lowercase().contains("stryke"),
+            r["err"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("stryke"),
             "clean missing-binary error: {r}"
         );
     }
@@ -756,12 +822,19 @@ fn stryke_run_passes_stdin_through() {
     if r["ok"] == json!(true) {
         assert_eq!(r["code"], json!(0), "clean run: {r}");
         assert!(
-            r["stdout"].as_str().unwrap_or("").contains("zwire-stdin-marker"),
+            r["stdout"]
+                .as_str()
+                .unwrap_or("")
+                .contains("zwire-stdin-marker"),
             "stdin round-tripped to stdout: {r}"
         );
     } else {
         assert!(
-            r["err"].as_str().unwrap_or("").to_lowercase().contains("stryke"),
+            r["err"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("stryke"),
             "clean missing-binary error: {r}"
         );
     }
@@ -775,10 +848,19 @@ fn hooks_save_empty_name_gets_slug_id() {
     let mut child = spawn_stdio(&home);
     let mut si = child.stdin.take().unwrap();
     let mut so = child.stdout.take().unwrap();
-    nm_send(&mut si, &json!({"cmd":"hooks_save","hook":{"name":"","event":"navigation","enabled":false}}));
+    nm_send(
+        &mut si,
+        &json!({"cmd":"hooks_save","hook":{"name":"","event":"navigation","enabled":false}}),
+    );
     let saved = nm_recv(&mut so).expect("save reply");
     assert_eq!(saved["ok"], json!(true));
-    assert!(saved["hook"]["id"].as_str().unwrap_or("").starts_with("hook-"), "slug fallback: {saved}");
+    assert!(
+        saved["hook"]["id"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("hook-"),
+        "slug fallback: {saved}"
+    );
     drop(si);
     let _ = child.wait();
 }
@@ -821,7 +903,10 @@ fn zgui_bus_owned_by_dedicated_daemon() {
     // (a) A pure one-shot must NOT bring up the bus (the `version` arm never ensures the daemon).
     let mut oneshot = spawn(&["version"]);
     let _ = oneshot.wait();
-    assert!(!bus_sock.exists(), "one-shot `version` created the bus at {bus_sock:?}");
+    assert!(
+        !bus_sock.exists(),
+        "one-shot `version` created the bus at {bus_sock:?}"
+    );
 
     // (b) The dedicated daemon binds and serves.
     let mut daemon = spawn(&["bus-daemon"]);
@@ -834,14 +919,23 @@ fn zgui_bus_owned_by_dedicated_daemon() {
     let mut dup_exited = false;
     while Instant::now() < deadline {
         if let Ok(Some(status)) = dup.try_wait() {
-            assert!(status.success(), "duplicate bus-daemon exited non-zero: {status}");
+            assert!(
+                status.success(),
+                "duplicate bus-daemon exited non-zero: {status}"
+            );
             dup_exited = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(dup_exited, "second bus-daemon did not exit — singleton flock failed");
-    assert!(live(), "bus went stale after a duplicate daemon started — the os-error-61 regression");
+    assert!(
+        dup_exited,
+        "second bus-daemon did not exit — singleton flock failed"
+    );
+    assert!(
+        live(),
+        "bus went stale after a duplicate daemon started — the os-error-61 regression"
+    );
 
     let _ = daemon.kill();
     let _ = daemon.wait();

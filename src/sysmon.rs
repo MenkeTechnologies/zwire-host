@@ -228,7 +228,8 @@ fn battery() -> Option<Value> {
     // `contains("charging")` was true on battery too, pinning the ⚡ bolt on permanently.
     // "charged"/"AC attached" = plugged-but-full → `ac` only.
     let charging = s.contains("; charging") || s.contains("finishing charge");
-    let ac = charging || s.contains("AC Power") || s.contains("AC attached") || s.contains("charged");
+    let ac =
+        charging || s.contains("AC Power") || s.contains("AC attached") || s.contains("charged");
     Some(json!({"p": pct, "c": charging, "ac": ac}))
 }
 
@@ -253,7 +254,10 @@ fn battery() -> Option<Value> {
                         .and_then(|c| c.trim().parse().ok());
                 }
                 // Only "Charging" is actively charging; "Full" means plugged-but-topped-off → on AC.
-                match fs::read_to_string(p.join("status")).unwrap_or_default().trim() {
+                match fs::read_to_string(p.join("status"))
+                    .unwrap_or_default()
+                    .trim()
+                {
                     "Charging" => {
                         charging = true;
                         on_ac = true;

@@ -233,7 +233,10 @@ struct Capture(Arc<Mutex<Vec<u8>>>);
 
 impl Write for Capture {
     fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(b);
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend_from_slice(b);
         Ok(b.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -381,7 +384,13 @@ fn handle_conn(stream: UnixStream) {
             // Event subscriptions are not bridged yet (host pub/sub is process-global and not
             // request/reply). Acknowledge so the client doesn't hang.
             Some("sub") => reply(&mut w, id, true, Value::Null, None),
-            _ => reply(&mut w, id, false, Value::Null, Some("unknown request kind".into())),
+            _ => reply(
+                &mut w,
+                id,
+                false,
+                Value::Null,
+                Some("unknown request kind".into()),
+            ),
         }
     }
 }

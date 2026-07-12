@@ -28,16 +28,13 @@ const STRYKE_APP_VERSION: &str = "0.1.0";
 fn bundled_stryke_app_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    for cand in [
+    [
         dir.join("stryke-app"),
         dir.join("../Resources/stryke-app"),
         dir.join("../stryke-app"),
-    ] {
-        if cand.join("lib").join("App.stk").is_file() {
-            return Some(cand);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|cand| cand.join("lib").join("App.stk").is_file())
 }
 
 /// Ensure the `App` package is present in the stryke store so `use App` resolves with NO user install
@@ -48,12 +45,17 @@ pub fn ensure_stryke_app() {
     let store = std::env::var_os("STRYKE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".stryke")))
-        .map(|r| r.join("store").join(format!("stryke-app@{STRYKE_APP_VERSION}")));
+        .map(|r| {
+            r.join("store")
+                .join(format!("stryke-app@{STRYKE_APP_VERSION}"))
+        });
     let Some(dest) = store else { return };
     if dest.join("lib").join("App.stk").is_file() {
         return; // already extracted
     }
-    let Some(src) = bundled_stryke_app_dir() else { return };
+    let Some(src) = bundled_stryke_app_dir() else {
+        return;
+    };
     let _ = std::fs::create_dir_all(dest.join("lib"));
     for rel in [
         "stryke.toml",

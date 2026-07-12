@@ -154,9 +154,7 @@ enum Action {
         body: String,
     },
     /// Open a path/URL with the OS default handler (via `osops::open`).
-    Open {
-        target: String,
-    },
+    Open { target: String },
     /// Run a subprocess (via `exec::run`).
     Exec {
         program: String,
@@ -461,7 +459,12 @@ pub fn test_run(msg: &Value) -> Value {
         None => msg["sample"].clone(),
     };
     let envelope = json!({ "event": h.event, "payload": payload }).to_string();
-    match run_script(&sp, &h.event, &envelope, Duration::from_millis(h.timeout_ms)) {
+    match run_script(
+        &sp,
+        &h.event,
+        &envelope,
+        Duration::from_millis(h.timeout_ms),
+    ) {
         Ok(out) => json!({
             "ok": true,
             "stdout": out.stdout,

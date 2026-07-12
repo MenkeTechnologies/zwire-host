@@ -593,7 +593,10 @@ mod tests {
         let d2 = std::env::temp_dir().join(format!("zwire-hudpal-empty-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&d2);
         write_hud_palette(&d2, &json!({}));
-        assert!(!d2.join("hud-palette").exists(), "empty palette writes nothing");
+        assert!(
+            !d2.join("hud-palette").exists(),
+            "empty palette writes nothing"
+        );
 
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&d2);

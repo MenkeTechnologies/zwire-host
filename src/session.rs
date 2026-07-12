@@ -258,7 +258,7 @@ impl Session {
             "hook_fire" => respond(out, msg, hooks::fire_cmd(msg)),
 
             /* ---- stryke language server for the Hooks editor (ported from
-               Audio-Haxor stryke_lsp.rs) — one child per connection ---- */
+            Audio-Haxor stryke_lsp.rs) — one child per connection ---- */
             "stryke_lsp_start" => {
                 self.stryke_lsp = None; // kill any prior server first
                 match crate::stryke_lsp::StrykeLsp::start(out) {
