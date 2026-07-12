@@ -157,7 +157,7 @@ fn read_capped<R: Read>(mut r: R) -> String {
 
 /// Run `stryke <script_path>` with `event_json` on stdin and `ZWIRE_EVENT` set to
 /// `event_name`. Kills the child if it runs longer than `timeout`. Output is
-/// truncated to [`MAX_OUTPUT_BYTES`].
+/// truncated to `MAX_OUTPUT_BYTES`.
 pub fn run_script(
     script_path: &Path,
     event_name: &str,

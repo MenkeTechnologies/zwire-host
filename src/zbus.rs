@@ -10,9 +10,12 @@
 //! framing (see `transport.rs` / `proto.rs`), so the protocol is a few frames on top of that.
 //!
 //! Frames (one JSON object per line):
+//!
+//! ```text
 //!   in : {"t":"call","id":N,"verb":"<cmd>","args":{…}} | {"t":"get","id":N,"state":"<cmd>"}
 //!        {"t":"verbs","id":N} | {"t":"sub","id":N,"event":"…"}
 //!   out: {"t":"reply","id":N,"ok":true,"value":<host reply>} | {"t":"reply","id":N,"ok":false,"error":"…"}
+//! ```
 //!
 //! A `call`/`get` is translated to a host request `{"cmd":<verb>, …args}` and run through the REAL
 //! [`session::Session::handle`] with a CAPTURING sink, so every host command works with zero

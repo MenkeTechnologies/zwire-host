@@ -121,7 +121,7 @@ const ZWIRE_DIRNAME: &str = "zwire";
 /// The base directory for an app's state, created on demand. `app` empty or
 /// missing resolves to the zwire app. For the `zwire` app, `$ZWIRE_STATE`
 /// overrides the whole path (the launcher/native-host contract) and otherwise
-/// the folder is [`ZWIRE_DIRNAME`], keeping the host, the C++ colour mixer, and
+/// the folder is `ZWIRE_DIRNAME`, keeping the host, the C++ colour mixer, and
 /// the shell scripts pointed at one directory. Any other `app` gets its own
 /// `<app>` sub-folder for the generic kv store.
 pub fn app_dir(app: &str) -> PathBuf {
