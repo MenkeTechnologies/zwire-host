@@ -55,6 +55,8 @@ fn spawn_stdio(home: &PathBuf) -> Child {
         .env_remove("ZWIRE_STATE")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("APPDATA")
+        // Hermetic: don't let the host auto-spawn a detached bus daemon on the real bus.
+        .env("ZWIRE_BUS_NO_DAEMON", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -504,6 +506,8 @@ fn socket_daemon_round_trips_over_the_wire() {
     let mut daemon = Command::new(BIN)
         .args(["serve", "--socket", &ep])
         .env("HOME", &home)
+        // Hermetic: don't let `serve` auto-spawn a detached bus daemon on the real bus.
+        .env("ZWIRE_BUS_NO_DAEMON", "1")
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
@@ -779,20 +783,22 @@ fn hooks_save_empty_name_gets_slug_id() {
     let _ = child.wait();
 }
 
-/// The `App::open("zwire")` bus (`$TMPDIR/zgui/zwire.sock`) must be owned ONLY by a long-lived host.
-/// Regression for the intermittent `Connection refused (os error 61)`: a one-shot (`version`) used to
-/// run `zbus::start()`, bind the bus, then exit in milliseconds — leaving a stale socket that the next
-/// `App::open` connect refused. Here: (a) a one-shot never creates the bus, and (b) a one-shot run
-/// while a `serve` host owns the bus adopts it and leaves it connectable (no clobber).
+/// The `App::open("zwire")` bus (`$TMPDIR/zgui/zwire.sock`) is owned by a DEDICATED, detached
+/// `bus-daemon` singleton — never by whichever native host runs first. Regression for the intermittent
+/// `Connection refused (os error 61)`: Chrome spawns a short-lived host per `sendNativeMessage`; one
+/// would bind the bus, get adopted by the persistent hosts, then exit — stranding a stale socket that
+/// nobody re-bound. Now hosts only *ensure* the daemon; it alone owns the socket and never exits early.
+/// Pins: (a) a pure one-shot never brings up the bus; (b) the daemon binds and serves; (c) a second
+/// daemon adopts the live bus and exits (singleton `flock`) without clobbering it.
 #[test]
-fn zgui_bus_owned_only_by_long_lived_host() {
+fn zgui_bus_owned_by_dedicated_daemon() {
     use std::os::unix::net::UnixStream;
 
     // Isolated bus root so this never races the developer's real `$TMPDIR/zgui/zwire.sock`.
     let bus_root = temp_home();
     let bus_sock = bus_root.join("zgui").join("zwire.sock");
-    // socket_dir() prefers XDG_RUNTIME_DIR, else TMPDIR — pin it to our temp dir for both children.
-    let run = |args: &[&str]| {
+    // socket_dir() prefers XDG_RUNTIME_DIR, else TMPDIR — pin it to our temp dir for every child.
+    let spawn = |args: &[&str]| {
         Command::new(BIN)
             .args(args)
             .env("HOME", &bus_root)
@@ -804,28 +810,41 @@ fn zgui_bus_owned_only_by_long_lived_host() {
             .spawn()
             .unwrap()
     };
+    let live = || UnixStream::connect(&bus_sock).is_ok();
+    let wait_live = || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && !live() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
 
-    // (a) A one-shot must NOT bind the bus.
-    let mut oneshot = run(&["version"]);
+    // (a) A pure one-shot must NOT bring up the bus (the `version` arm never ensures the daemon).
+    let mut oneshot = spawn(&["version"]);
     let _ = oneshot.wait();
-    assert!(!bus_sock.exists(), "one-shot `version` bound the bus at {bus_sock:?}");
+    assert!(!bus_sock.exists(), "one-shot `version` created the bus at {bus_sock:?}");
 
-    // (b) A long-lived `serve` host owns the bus; a concurrent one-shot must leave it connectable.
-    let hostsock = bus_root.join("host.sock");
-    let mut serve = run(&["serve", "--socket", hostsock.to_str().unwrap()]);
+    // (b) The dedicated daemon binds and serves.
+    let mut daemon = spawn(&["bus-daemon"]);
+    wait_live();
+    assert!(live(), "bus-daemon never bound the bus");
+
+    // (c) A second daemon sees the live bus, adopts it, and EXITS (does not clobber or duplicate).
+    let mut dup = spawn(&["bus-daemon"]);
     let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline && UnixStream::connect(&bus_sock).is_err() {
+    let mut dup_exited = false;
+    while Instant::now() < deadline {
+        if let Ok(Some(status)) = dup.try_wait() {
+            assert!(status.success(), "duplicate bus-daemon exited non-zero: {status}");
+            dup_exited = true;
+            break;
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(UnixStream::connect(&bus_sock).is_ok(), "serve host never bound the bus");
+    assert!(dup_exited, "second bus-daemon did not exit — singleton flock failed");
+    assert!(live(), "bus went stale after a duplicate daemon started — the os-error-61 regression");
 
-    let mut oneshot = run(&["version"]);
-    let _ = oneshot.wait();
-    assert!(
-        UnixStream::connect(&bus_sock).is_ok(),
-        "one-shot clobbered the live bus — the exact os-error-61 regression"
-    );
-
-    let _ = serve.kill();
-    let _ = serve.wait();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    let _ = dup.kill();
+    let _ = dup.wait();
 }

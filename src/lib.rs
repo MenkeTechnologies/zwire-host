@@ -196,11 +196,19 @@ pub fn run(args: Vec<String>) {
         }
     }
 
+    // Internal subcommand: the dedicated bus-daemon singleton that OWNS the `App::open("zwire")`
+    // socket. Spawned detached by `zbus::ensure_daemon`; must run before `ensure_stryke_app` (it has
+    // no need for the App package and should stay minimal). Never exits until it loses the socket.
+    if positional.first().map(String::as_str) == Some("bus-daemon") {
+        zbus::run_daemon();
+    }
+
     // Self-contained scripting: extract the bundled `App` package if missing so stryke can drive the
-    // host. Best-effort, never blocks startup. The `App::open("zwire")` bus (zbus::start) is opened
-    // ONLY by the long-lived hosts (`serve` + stdio) below — NOT here. A one-shot (`call`/`version`/
-    // `help`) that bound the bus would exit in milliseconds and leave a stale socket, so the next
-    // `App::open` gets `Connection refused (os error 61)`. One-shots are clients; they connect, never bind.
+    // host. Best-effort, never blocks startup. The `App::open("zwire")` bus is owned by a dedicated,
+    // detached `bus-daemon` singleton (see zbus::ensure_daemon) — NOT by whichever host runs first,
+    // which was the intermittent `Connection refused (os error 61)` bug (a short-lived
+    // `sendNativeMessage` host would bind the bus, get adopted by the persistent hosts, then exit,
+    // leaving a stale socket). Every long-lived run mode ensures the daemon is up below.
     stryke_runner::ensure_stryke_app();
 
     match positional.first().map(String::as_str) {
@@ -208,7 +216,7 @@ pub fn run(args: Vec<String>) {
             // Seed ~/.zwire/global.toml on a fresh machine so the fleet has a
             // theme file to read (never clobbers an existing one).
             crate::store::ensure_global(&crate::store::theme_dir());
-            zbus::start();
+            zbus::ensure_daemon();
             transport::serve(transport::ServeConfig {
                 socket,
                 tcp,
@@ -239,7 +247,10 @@ pub fn run(args: Vec<String>) {
             // Seed ~/.zwire/global.toml on a fresh machine (the browser launches
             // this stdio host on every start); never clobbers an existing one.
             crate::store::ensure_global(&crate::store::theme_dir());
-            zbus::start();
+            // Ensure the bus daemon is up (spawns it if absent). Both persistent `connectNative` and
+            // short-lived `sendNativeMessage` hosts take this arm; neither OWNS the bus, so a
+            // short-lived one exiting can no longer strand it. Self-healing: any message respawns it.
+            zbus::ensure_daemon();
             transport::stdio()
         }
     }
