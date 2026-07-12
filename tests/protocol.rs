@@ -872,6 +872,9 @@ fn hooks_save_empty_name_gets_slug_id() {
 /// nobody re-bound. Now hosts only *ensure* the daemon; it alone owns the socket and never exits early.
 /// Pins: (a) a pure one-shot never brings up the bus; (b) the daemon binds and serves; (c) a second
 /// daemon adopts the live bus and exits (singleton `flock`) without clobbering it.
+// The bus daemon is Unix-socket only (see zwire_host::zbus); the stub does
+// nothing on other platforms, so this end-to-end ownership test is unix-only.
+#[cfg(unix)]
 #[test]
 fn zgui_bus_owned_by_dedicated_daemon() {
     use std::os::unix::net::UnixStream;
