@@ -211,17 +211,26 @@ mod tests {
             .map(|i| json!({"label": format!("symbol_number_{i}"), "kind": 6}))
             .collect();
         let payload = json!({"jsonrpc": "2.0", "id": 7, "result": items}).to_string();
-        assert!(frame_len(&payload) > NATIVE_MSG_CAP, "fixture must be oversized");
+        assert!(
+            frame_len(&payload) > NATIVE_MSG_CAP,
+            "fixture must be oversized"
+        );
 
         let frame = lsp_frame(&payload);
         assert_eq!(frame["ev"], "stryke-lsp-rx");
         let msg = frame["message"].as_str().unwrap();
-        assert!(frame_len(msg) <= NATIVE_MSG_CAP, "trimmed frame must fit the cap");
+        assert!(
+            frame_len(msg) <= NATIVE_MSG_CAP,
+            "trimmed frame must fit the cap"
+        );
         let v: Value = serde_json::from_str(msg).unwrap();
         assert_eq!(v["id"], 7);
         assert_eq!(v["result"]["isIncomplete"], true);
         let kept = v["result"]["items"].as_array().unwrap().len();
-        assert!(kept > 0 && kept < 40_000, "some items kept, but not all: {kept}");
+        assert!(
+            kept > 0 && kept < 40_000,
+            "some items kept, but not all: {kept}"
+        );
     }
 
     /// The `{isIncomplete, items}` completion shape is trimmed the same way.
