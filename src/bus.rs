@@ -3,7 +3,7 @@
 //! Any long-lived connection can `sub` to topics and receive `{"ev":"pub",…}`
 //! frames whenever another connection `pub`s to the same topic. Because the
 //! broker is process-global, a message published by the browser HUD reaches a
-//! subscribed zemacs, tmux widget, or plugin — they never talk to each other
+//! subscribed zmax, tmux widget, or plugin — they never talk to each other
 //! directly, only through the host. The daemon also publishes on well-known
 //! topics itself (e.g. `scheme` / `ui` when those change), so clients get live
 //! theme sync for free.

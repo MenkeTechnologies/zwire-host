@@ -9,7 +9,7 @@
 //! This watcher closes that gap: a background thread (started lazily on the first
 //! theme `sub`) polls the shared file and, when the scheme/ui differs from what
 //! THIS process last saw, republishes it to this process's local bus subscribers.
-//! So a toggle in Audio-Haxor fans out to the live zwire HUD, zemacs, etc.
+//! So a toggle in Audio-Haxor fans out to the live zwire HUD, zmax, etc.
 //!
 //! Echo control: local writes call [`note_scheme`] / [`note_ui`] / [`note_palette`]
 //! to record the value this process just wrote, so the watcher recognises its own

@@ -381,7 +381,7 @@ impl Session {
                     // Snapshot-on-subscribe for the theme topics: hand the new
                     // subscriber the CURRENT value right away (same frame shape as
                     // a live pub), so any client — zwire's HUD/newtab/zpwrchrome
-                    // extensions, zemacs, zpwr-daw — converges to the persisted
+                    // extensions, zmax, zpwr-daw — converges to the persisted
                     // scheme + light/fx the instant it connects, with no separate
                     // `get` and no polling. The host is the single source of truth.
                     let d = store::theme_dir();

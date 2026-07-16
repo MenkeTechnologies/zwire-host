@@ -218,7 +218,7 @@ pub fn kv_keys(app: &str) -> Vec<String> {
 // ─────────────────────── shared fleet-wide theme ───────────────────────
 // The colour scheme + light/fx prefs (and user-defined custom schemes) live in
 // ONE app-independent file, `~/.zwire/global.toml`, so EVERY zwire-host client —
-// the browser HUD/newtab/zpwrchrome, Audio-Haxor, zemacs, zpwr-daw, the whole
+// the browser HUD/newtab/zpwrchrome, Audio-Haxor, zmax, zpwr-daw, the whole
 // fleet — reads and writes the same theme. `d` is the shared theme dir
 // (`theme_dir()`); the legacy per-app `hud-scheme`/`hud-ui.json` split is gone.
 //
@@ -394,7 +394,7 @@ pub fn write_ui(d: &Path, partial: &Value) -> Value {
 }
 
 /// Create `global.toml` with a default theme when it's absent, so consumers
-/// (zemacs and the rest of the fleet) always have a file to read on a fresh
+/// (zmax and the rest of the fleet) always have a file to read on a fresh
 /// machine — called once at host startup. The dir is created by [`theme_dir`].
 /// Never clobbers an existing file. The palette is left for the HUD to fill on
 /// first paint (the host has no colour tables); scheme + light are enough to
@@ -428,7 +428,7 @@ pub fn ensure_global(d: &Path) {
 
 /// Current resolved colour palette (`[theme.palette]`; empty object when unset).
 /// This is the fleet's canonical colour source: a CSS-var → hex map for the
-/// active scheme + light/dark, so any consumer (zemacs, a Vivaldi mod, a plain
+/// active scheme + light/dark, so any consumer (zmax, a Vivaldi mod, a plain
 /// script) reads exact colours here without needing zgui's baked scheme tables.
 pub fn current_palette(d: &Path) -> Value {
     load_global(d)
