@@ -48,6 +48,9 @@ pub mod sysmon;
 pub mod tauri_theme;
 pub mod theme_watch;
 pub mod transport;
+/// Transactional compensation for the automation bus: the journal + reversibility classes behind
+/// `App::txn { … }`, driven by the `begin` / `commit` / `abort` frames in [`zbus`].
+pub mod txn;
 pub mod watch;
 /// GUI Automation Bus endpoint — `App::open("zwire")` (native zgui-bridge protocol, no proprietary dep).
 ///

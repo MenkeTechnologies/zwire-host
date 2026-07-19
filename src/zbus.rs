@@ -21,8 +21,17 @@
 //! ```text
 //!   in : {"t":"call","id":N,"verb":"<cmd>","args":{…}} | {"t":"get","id":N,"state":"<cmd>"}
 //!        {"t":"verbs","id":N} | {"t":"sub","id":N,"event":"…"}
+//!        {"t":"begin","id":N,"args":{…}} | {"t":"commit","id":N,"args":{"txn":T}}
+//!        {"t":"abort","id":N,"args":{"txn":T}} | {"t":"undo","id":N,"args":{…}}
 //!   out: {"t":"reply","id":N,"ok":true,"value":<host reply>} | {"t":"reply","id":N,"ok":false,"error":"…"}
 //! ```
+//!
+//! PROTOCOL DRIFT IS THE STANDING HAZARD HERE. Because the frames above are hand-mirrored rather
+//! than shared with the `zgui-bridge` crate, a frame added there and forgotten here degrades to the
+//! `"unknown request kind"` fallthrough in [`serve_conn`] — a clean error, never a hang, but still a
+//! silent capability gap. `tests/wire_conformance.rs` pins the mirrored frame corpus so the gap
+//! fails a build instead of a script. Every frame added to `zgui-bridge/src/proto.rs` must be added
+//! to that corpus and to the match below in the same change.
 //!
 //! A `call`/`get` is translated to a host request `{"cmd":<verb>, …args}` and run through the REAL
 //! [`session::Session::handle`] with a CAPTURING sink, so every host command works with zero
@@ -218,7 +227,112 @@ const SURFACE_VERBS: &[&str] = &[
     "browser.notify",
     // terminal
     "browser.tmux",
+    // transactional compensation (see `txn.rs`); `browser.undo` is executed by the HUD worker,
+    // which owns the per-step pre-state journal.
+    "browser.undo",
+    "txn_begin",
+    "txn_commit",
+    "txn_abort",
 ];
+
+/// The reversibility class of a verb, as advertised on `surface()` and enforced at call time while
+/// a transaction is open.
+///
+/// * `"inverse"` — a compensation exists that restores the prior observable state. Journaled on
+///   call, replayed in reverse order on abort.
+/// * `"pure"` — reads only. Runs inside a transaction, is not journaled, is not compensated.
+/// * `"irreversible"` — the DEFAULT for anything absent from [`REV`]. Rejected at call time while a
+///   transaction is open, so an un-undoable step fails fast at the top of a chain instead of
+///   stranding it half-compensated at abort time.
+///
+/// Only `browser.*` verbs can be `"inverse"`: the HUD service worker captures each one's pre-state
+/// at execution time and replays the inverse (`browser.undo`). No host-side command has a
+/// compensation, so every host WRITE is `"irreversible"` here rather than optimistically classed.
+const REV: &[(&str, &str)] = &[
+    /* ---- host reads: safe inside a transaction, nothing to unwind ---- */
+    ("clipboard_get", "pure"),
+    ("fs_list", "pure"),
+    ("fs_read", "pure"),
+    ("fs_stat", "pure"),
+    ("fs_walk", "pure"),
+    ("get", "pure"),
+    ("hello", "pure"),
+    ("hooks_events", "pure"),
+    ("hooks_get_script", "pure"),
+    ("hooks_list", "pure"),
+    ("hooks_script_path", "pure"),
+    ("hostinfo", "pure"),
+    ("hostlog", "pure"),
+    ("job_list", "pure"),
+    ("job_poll", "pure"),
+    ("job_result", "pure"),
+    ("kv_get", "pure"),
+    ("kv_keys", "pure"),
+    ("peer", "pure"),
+    ("peers", "pure"),
+    ("ping", "pure"),
+    ("ps", "pure"),
+    ("sysinfo_once", "pure"),
+    ("watch_list", "pure"),
+    ("which", "pure"),
+    /* ---- browser tabs: worker journals {id,url,index,windowId,pinned,muted} ---- */
+    ("browser.closeTab", "inverse"),
+    ("browser.closeOthers", "inverse"),
+    ("browser.closeRight", "inverse"),
+    ("browser.closeLeft", "inverse"),
+    ("browser.closeDuplicates", "inverse"),
+    /* ---- browser tab creation: worker journals the created id ---- */
+    ("browser.newTab", "inverse"),
+    ("browser.openTab", "inverse"),
+    ("browser.duplicateTab", "inverse"),
+    ("browser.newWindow", "inverse"),
+    /* ---- browser tab flags: worker journals the prior flag per affected tab ---- */
+    ("browser.pinTab", "inverse"),
+    ("browser.unpinTab", "inverse"),
+    ("browser.muteTab", "inverse"),
+    ("browser.unmuteTab", "inverse"),
+    ("browser.muteOthers", "inverse"),
+    /* ---- browser tab position: worker journals the prior index ---- */
+    ("browser.moveTabLeft", "inverse"),
+    ("browser.moveTabRight", "inverse"),
+    ("browser.moveTabFirst", "inverse"),
+    ("browser.moveTabLast", "inverse"),
+    ("browser.tabToNewWindow", "inverse"),
+    /* ---- browser selection: worker journals the prior active tab ---- */
+    ("browser.activate", "inverse"),
+    ("browser.firstTab", "inverse"),
+    ("browser.lastTab", "inverse"),
+    ("browser.gotoTab", "inverse"),
+    ("browser.nextTab", "inverse"),
+    ("browser.prevTab", "inverse"),
+    /* ---- browser page: worker journals the prior url / zoom factor ---- */
+    ("browser.open", "inverse"),
+    ("browser.zoomIn", "inverse"),
+    ("browser.zoomOut", "inverse"),
+    ("browser.zoomReset", "inverse"),
+    ("browser.goBack", "inverse"),
+    ("browser.goForward", "inverse"),
+    /* ---- browser reads / idempotent refreshes ---- */
+    ("browser.reload", "pure"),
+    ("browser.reloadHard", "pure"),
+    ("browser.reloadAll", "pure"),
+    ("browser.screenshot", "pure"),
+    ("browser.detectLanguage", "pure"),
+    /* ---- transaction control itself: never journaled, never compensated ---- */
+    ("txn_begin", "pure"),
+    ("txn_commit", "pure"),
+    ("txn_abort", "pure"),
+    ("browser.undo", "pure"),
+];
+
+/// The reversibility class of `verb` — `"inverse"`, `"pure"`, or `"irreversible"` (the default for
+/// anything [`REV`] does not name, including every unknown verb).
+pub fn rev(verb: &str) -> &'static str {
+    REV.iter()
+        .find(|(id, _)| *id == verb)
+        .map(|(_, class)| *class)
+        .unwrap_or("irreversible")
+}
 
 /// A `std::io::Write` sink that captures everything written into a shared buffer, so we can run a real
 /// `Session` against an in-memory "connection" and read back the reply it emits via `respond`.
@@ -308,11 +422,55 @@ fn run_command(verb: &str, args: &Value) -> Value {
     json!({ "ok": false, "err": "no reply from host session" })
 }
 
+/// Transaction control (`txn_begin` / `txn_commit` / `txn_abort`), dispatched from
+/// [`crate::session::Session`] so the frames and the plain host commands share one implementation.
+///
+/// `txn_abort` is the one that does work: it drains the journal in reverse `seq` order and forwards
+/// a SINGLE `browser.undo` carrying the reversed step list. The HUD worker holds the per-step
+/// pre-state (a `browser.*` forward call returns a delivery count, not a browser result — see
+/// [`run_command`]), so the host contributes the ORDER and the worker contributes the inverses. The
+/// `txn-aborted` lifecycle event fires afterwards so a hook can observe the compensation.
+pub fn txn_command(cmd: &str, args: &Value) -> Value {
+    match cmd {
+        "txn_begin" => crate::txn::begin(args),
+        "txn_commit" => crate::txn::commit(args),
+        "txn_abort" => {
+            let txn = match args.get("txn").and_then(Value::as_u64) {
+                Some(t) => t,
+                None => return json!({ "ok": false, "err": "no txn" }),
+            };
+            // Removed from the journal before anything is compensated, so a concurrent second
+            // abort of the same transaction unwinds nothing rather than unwinding twice.
+            let entries = crate::txn::take_reversed(txn);
+            let steps: Vec<Value> = entries
+                .iter()
+                .map(|e| json!({ "seq": e.seq, "verb": e.verb, "args": e.args }))
+                .collect();
+            let undo = if steps.is_empty() {
+                Value::Null
+            } else {
+                run_command("browser.undo", &json!({ "txn": txn, "steps": steps }))
+            };
+            crate::hooks::fire("txn-aborted", json!({ "txn": txn, "steps": steps.len() }));
+            json!({
+                "ok": true,
+                "txn": txn,
+                "steps": steps.len(),
+                "aborted": true,
+                "undo": undo,
+            })
+        }
+        _ => json!({ "ok": false, "err": "unknown_cmd", "cmd": cmd }),
+    }
+}
+
 /// The automation surface — every host command (for discovery) plus a couple of state queries.
+/// Each verb carries its `rev` class (see [`rev`]) so a script can tell, before it builds a chain,
+/// which steps are safe to put inside `App::txn`.
 fn surface() -> Value {
     let verbs: Vec<Value> = SURFACE_VERBS
         .iter()
-        .map(|c| json!({ "id": *c, "label": *c }))
+        .map(|c| json!({ "id": *c, "label": *c, "rev": rev(c) }))
         .collect();
     json!({
         "app": "zwire",
@@ -323,6 +481,25 @@ fn surface() -> Value {
         ],
         "events": [],
     })
+}
+
+/// The argument object of a transaction frame.
+///
+/// `zgui-bridge` carries `txn` (and an undo's `verb`/`args`/`result`) at the TOP level of the frame,
+/// while a `call` nests everything under `args`. Accept either shape so a client written against
+/// the crate's frames works unchanged here — the hand-mirroring is exactly where the two drift.
+fn args_of(req: &Value) -> Value {
+    let mut o = req
+        .get("args")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for k in ["txn", "verb", "seq", "result"] {
+        if let Some(v) = req.get(k) {
+            o.entry(k).or_insert_with(|| v.clone());
+        }
+    }
+    Value::Object(o)
 }
 
 /// Frame + write one zgui-bridge reply on any writer.
@@ -344,7 +521,7 @@ fn reply<W: Write>(w: &mut W, id: u64, ok: bool, value: Value, error: Option<Str
 
 /// Serve one accepted bus connection given its read + write halves: read zgui-bridge request frames,
 /// dispatch, reply. Platform-neutral — the per-platform accept loop supplies the two halves.
-fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
+pub fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
@@ -363,6 +540,32 @@ fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
             Some("call") => {
                 let verb = req.get("verb").and_then(Value::as_str).unwrap_or("");
                 let args = req.get("args").cloned().unwrap_or_else(|| json!({}));
+                // Outside a transaction this is exactly the pre-transaction path: no class check,
+                // no journal. Inside one, an `irreversible` verb is refused HERE rather than at
+                // abort time — the whole point of the class is that a chain never gets stranded
+                // half-undone.
+                if crate::txn::any_open() {
+                    let txn = req.get("txn").and_then(Value::as_u64);
+                    if txn.is_none_or(crate::txn::is_open) {
+                        match rev(verb) {
+                            "irreversible" => {
+                                reply(
+                                    &mut w,
+                                    id,
+                                    false,
+                                    Value::Null,
+                                    Some(format!("verb not reversible: {verb}")),
+                                );
+                                continue;
+                            }
+                            // `pure` changes nothing, so there is nothing to compensate.
+                            "inverse" => {
+                                crate::txn::record(txn, verb, &args);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 reply(&mut w, id, true, run_command(verb, &args), None);
             }
             Some("get") => {
@@ -373,6 +576,25 @@ fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
             // Event subscriptions are not bridged yet (host pub/sub is process-global and not
             // request/reply). Acknowledge so the client doesn't hang.
             Some("sub") => reply(&mut w, id, true, Value::Null, None),
+            // Transactional compensation. `begin`/`commit`/`abort` are host commands so an
+            // in-process caller reaches the same journal; `undo` is a browser action, executed by
+            // the HUD worker that holds the pre-state.
+            Some("begin") => reply(&mut w, id, true, run_command("txn_begin", &args_of(&req)), None),
+            Some("commit") => reply(
+                &mut w,
+                id,
+                true,
+                run_command("txn_commit", &args_of(&req)),
+                None,
+            ),
+            Some("abort") => reply(&mut w, id, true, run_command("txn_abort", &args_of(&req)), None),
+            Some("undo") => reply(
+                &mut w,
+                id,
+                true,
+                run_command("browser.undo", &args_of(&req)),
+                None,
+            ),
             _ => reply(
                 &mut w,
                 id,

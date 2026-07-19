@@ -295,6 +295,7 @@ pub fn events() -> Value {
             { "name": "app-close", "desc": "The last window closed — the browser is quitting", "sample": Value::Null },
             { "name": "host-ready", "desc": "The native host started", "sample": Value::Null },
             { "name": "extension-installed", "desc": "The HUD extension was installed or updated", "sample": { "reason": "update" } },
+            { "name": "txn-aborted", "desc": "An automation-bus transaction aborted — its steps were compensated in reverse order", "sample": { "txn": 1, "steps": 3 } },
             { "name": "browser-suspend", "desc": "The extension worker is suspending", "sample": Value::Null },
             { "name": "update-available", "desc": "A HUD extension update is ready", "sample": { "version": "0.6.0" } },
             // ── tabs ──

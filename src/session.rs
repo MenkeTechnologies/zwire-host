@@ -245,6 +245,13 @@ impl Session {
                 );
             }
 
+            /* ---- transactional compensation on the automation bus (see txn.rs) ----
+            Reachable both as these plain host commands and as the `begin`/`commit`/`abort`
+            bus frames, which route here so both callers share one journal. */
+            "txn_begin" | "txn_commit" | "txn_abort" => {
+                respond(out, msg, crate::zbus::txn_command(cmd, msg))
+            }
+
             /* ---- stryke lifecycle hooks (ported from Audio-Haxor hooks.rs) ---- */
             "hooks_list" => respond(out, msg, hooks::list()),
             "hooks_events" => respond(out, msg, hooks::events()),

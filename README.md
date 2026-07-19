@@ -157,6 +157,22 @@ multiplex many in-flight requests, streams, and terminals over one connection.
 The daemon itself publishes on `scheme` / `ui` whenever those change, so a
 subscribed app (a HUD, an editor) gets **live theme sync** without polling.
 
+**Transactional automation** (a chain of automation-bus calls that unwinds itself on failure)
+
+| Message | Reply / effect |
+|---|---|
+| `{"cmd":"txn_begin","txn"?:N}` | open a transaction → `{ok,txn}`. While one is open, every reversible call made on the bus is journaled. |
+| `{"cmd":"txn_commit","txn":N}` | close it, discarding the journal — nothing is compensated → `{ok,txn,steps}`. |
+| `{"cmd":"txn_abort","txn":N}` | compensate every journaled step in **reverse** order, then close → `{ok,txn,steps,undo}`. Fires the `txn-aborted` hook event. |
+
+Each verb declares a reversibility class, published as `rev` on the automation
+surface: `inverse` (a compensation exists), `pure` (reads only — runs but is not
+journaled), or `irreversible` (the default). Calling an `irreversible` verb while
+a transaction is open is **refused at call time** with `verb not reversible: <id>`,
+so a chain fails fast at the top instead of stranding itself half-undone at abort
+time. Compensation for `browser.*` verbs is replayed by the HUD service worker,
+which captured each step's pre-state; the host contributes the order.
+
 **stryke hooks & scripting** (runs [`stryke`](https://github.com/MenkeTechnologies/strykelang) via a bundled sidecar — the browser never spawns it directly)
 
 | Message | Reply / effect |
