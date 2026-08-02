@@ -78,16 +78,27 @@ fn serve(lines: &[&str]) -> Vec<Value> {
 fn assert_reply_shape(reply: &Value, id: u64) {
     assert_eq!(reply["t"], json!("reply"), "frame kind for id {id}");
     assert_eq!(reply["id"], json!(id), "reply id");
-    let ok = reply["ok"].as_bool().unwrap_or_else(|| panic!("id {id} has no bool `ok`"));
+    let ok = reply["ok"]
+        .as_bool()
+        .unwrap_or_else(|| panic!("id {id} has no bool `ok`"));
     if ok {
-        assert!(reply.get("value").is_some(), "id {id}: ok reply carries `value`");
-        assert!(reply.get("error").is_none(), "id {id}: ok reply carries no `error`");
+        assert!(
+            reply.get("value").is_some(),
+            "id {id}: ok reply carries `value`"
+        );
+        assert!(
+            reply.get("error").is_none(),
+            "id {id}: ok reply carries no `error`"
+        );
     } else {
         assert!(
             reply["error"].as_str().is_some(),
             "id {id}: failed reply carries a string `error`"
         );
-        assert!(reply.get("value").is_none(), "id {id}: failed reply carries no `value`");
+        assert!(
+            reply.get("value").is_none(),
+            "id {id}: failed reply carries no `value`"
+        );
     }
 }
 
@@ -139,7 +150,11 @@ fn abort_unwinds_in_reverse_call_order() {
     ]);
     let abort = &replies[4]["value"];
     assert_eq!(abort["ok"], json!(true));
-    assert_eq!(abort["steps"], json!(3), "all three inverse calls were journaled");
+    assert_eq!(
+        abort["steps"],
+        json!(3),
+        "all three inverse calls were journaled"
+    );
 
     assert_eq!(
         abort["undo"]["action"],
@@ -180,7 +195,11 @@ fn irreversible_verb_is_refused_while_a_transaction_is_open() {
         replies[1]["error"],
         json!("verb not reversible: browser.clearHistory")
     );
-    assert_eq!(replies[2]["ok"], json!(true), "a `pure` verb still runs inside a transaction");
+    assert_eq!(
+        replies[2]["ok"],
+        json!(true),
+        "a `pure` verb still runs inside a transaction"
+    );
     assert_eq!(
         replies[3]["value"]["steps"],
         json!(0),
@@ -249,12 +268,18 @@ fn surface_publishes_a_reversibility_class_for_every_verb() {
     assert!(!verbs.is_empty());
     for v in verbs {
         let id = v["id"].as_str().expect("verb id");
-        let class = v["rev"].as_str().unwrap_or_else(|| panic!("{id} has no `rev`"));
+        let class = v["rev"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{id} has no `rev`"));
         assert!(
             matches!(class, "inverse" | "pure" | "irreversible"),
             "{id} has an unknown rev class {class:?}"
         );
-        assert_eq!(class, zbus::rev(id), "surface disagrees with rev() for {id}");
+        assert_eq!(
+            class,
+            zbus::rev(id),
+            "surface disagrees with rev() for {id}"
+        );
     }
     assert_eq!(zbus::rev("browser.nothing-like-this"), "irreversible");
 }

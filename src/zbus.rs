@@ -28,7 +28,7 @@
 //!
 //! PROTOCOL DRIFT IS THE STANDING HAZARD HERE. Because the frames above are hand-mirrored rather
 //! than shared with the `zgui-bridge` crate, a frame added there and forgotten here degrades to the
-//! `"unknown request kind"` fallthrough in [`serve_conn`] — a clean error, never a hang, but still a
+//! `"unknown request kind"` fallthrough in [`serve_conn`](crate::zbus::serve_conn) — a clean error, never a hang, but still a
 //! silent capability gap. `tests/wire_conformance.rs` pins the mirrored frame corpus so the gap
 //! fails a build instead of a script. Every frame added to `zgui-bridge/src/proto.rs` must be added
 //! to that corpus and to the match below in the same change.
@@ -326,7 +326,7 @@ const REV: &[(&str, &str)] = &[
 ];
 
 /// The reversibility class of `verb` — `"inverse"`, `"pure"`, or `"irreversible"` (the default for
-/// anything [`REV`] does not name, including every unknown verb).
+/// anything `REV` does not name, including every unknown verb).
 pub fn rev(verb: &str) -> &'static str {
     REV.iter()
         .find(|(id, _)| *id == verb)
@@ -428,7 +428,7 @@ fn run_command(verb: &str, args: &Value) -> Value {
 /// `txn_abort` is the one that does work: it drains the journal in reverse `seq` order and forwards
 /// a SINGLE `browser.undo` carrying the reversed step list. The HUD worker holds the per-step
 /// pre-state (a `browser.*` forward call returns a delivery count, not a browser result — see
-/// [`run_command`]), so the host contributes the ORDER and the worker contributes the inverses. The
+/// `run_command`), so the host contributes the ORDER and the worker contributes the inverses. The
 /// `txn-aborted` lifecycle event fires afterwards so a hook can observe the compensation.
 pub fn txn_command(cmd: &str, args: &Value) -> Value {
     match cmd {
@@ -579,7 +579,13 @@ pub fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
             // Transactional compensation. `begin`/`commit`/`abort` are host commands so an
             // in-process caller reaches the same journal; `undo` is a browser action, executed by
             // the HUD worker that holds the pre-state.
-            Some("begin") => reply(&mut w, id, true, run_command("txn_begin", &args_of(&req)), None),
+            Some("begin") => reply(
+                &mut w,
+                id,
+                true,
+                run_command("txn_begin", &args_of(&req)),
+                None,
+            ),
             Some("commit") => reply(
                 &mut w,
                 id,
@@ -587,7 +593,13 @@ pub fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
                 run_command("txn_commit", &args_of(&req)),
                 None,
             ),
-            Some("abort") => reply(&mut w, id, true, run_command("txn_abort", &args_of(&req)), None),
+            Some("abort") => reply(
+                &mut w,
+                id,
+                true,
+                run_command("txn_abort", &args_of(&req)),
+                None,
+            ),
             Some("undo") => reply(
                 &mut w,
                 id,
