@@ -170,8 +170,22 @@ surface: `inverse` (a compensation exists), `pure` (reads only — runs but is n
 journaled), or `irreversible` (the default). Calling an `irreversible` verb while
 a transaction is open is **refused at call time** with `verb not reversible: <id>`,
 so a chain fails fast at the top instead of stranding itself half-undone at abort
-time. Compensation for `browser.*` verbs is replayed by the HUD service worker,
-which captured each step's pre-state; the host contributes the order.
+time.
+
+Compensation for `browser.*` verbs is replayed by the HUD service worker, because
+only it can read the live browser — a `browser.*` forward call is fire-and-forget
+across the native port and its reply carries a delivery count, not a browser
+result. The two halves are joined by one thing: the host stamps `_txn` and `_seq`
+onto every journaled action it forwards, and the worker files that step's
+pre-state under the same key. An abort then forwards a **single** `browser.undo`
+frame carrying the whole reversed step list, so an N-step unwind is one
+native-messaging round trip rather than N.
+
+Every forwarded action also carries a unique, monotonic `_n`. The same action
+reaches the worker over more than one transport (the `zbus.action` subscription
+and the kv the `stryke_run` reply piggybacks), and the worker runs each `_n`
+exactly once — so a chain is never dropped when only one transport is live, and
+never doubled when both are.
 
 **stryke hooks & scripting** (runs [`stryke`](https://github.com/MenkeTechnologies/strykelang) via a bundled sidecar — the browser never spawns it directly)
 

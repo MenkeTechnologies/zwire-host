@@ -283,3 +283,81 @@ fn surface_publishes_a_reversibility_class_for_every_verb() {
     }
     assert_eq!(zbus::rev("browser.nothing-like-this"), "irreversible");
 }
+
+/// The host and the HUD worker split transactional compensation down the middle: the host owns the
+/// ORDER (the `seq` clock), the worker owns the PRE-STATE (only it can read the live browser). The
+/// two halves are joined by exactly one thing — the `(txn, seq)` key stamped onto the forwarded
+/// action. If the stamp is missing, the worker cannot tell a transacted action from an ordinary one,
+/// journals nothing, and every `browser.undo` then finds an empty journal and compensates NOTHING
+/// while still reporting `ok` — a silent, total loss of the compensation the REV table advertises.
+#[test]
+fn a_journaled_action_is_forwarded_with_its_journal_key() {
+    let _g = txn_guard();
+
+    // Outside a transaction there is no journal entry to key, so nothing is stamped and the
+    // forwarded payload is byte-for-byte what it always was.
+    serve(&[r#"{"t":"call","id":1,"verb":"browser.pinTab","args":{"n":1}}"#]);
+    let plain = zwire_host::store::kv_get("zwire", "__zbus_action");
+    assert_eq!(plain["a"], json!("pinTab"));
+    assert!(
+        plain.get("_seq").is_none(),
+        "an un-transacted action is not journaled, so it must carry no journal key"
+    );
+
+    let replies = serve(&[
+        r#"{"t":"begin","id":1,"txn":4300}"#,
+        r#"{"t":"call","id":2,"verb":"browser.closeTab","args":{"n":1},"txn":4300}"#,
+    ]);
+    assert_eq!(replies[1]["ok"], json!(true));
+    let stamped = zwire_host::store::kv_get("zwire", "__zbus_action");
+    assert_eq!(stamped["a"], json!("closeTab"));
+    assert_eq!(stamped["n"], json!(1), "the caller's own args still ride along");
+    assert_eq!(stamped["_txn"], json!(4300));
+    let seq = stamped["_seq"]
+        .as_u64()
+        .expect("a journaled action carries the seq the worker files its pre-state under");
+
+    // The abort's step list must name the SAME seq. These are the two ends of the key: the worker
+    // stores under the forward stamp and looks up by the abort's `steps[].seq`, so a mismatch here
+    // is a journal that can never be read back.
+    let abort = serve(&[r#"{"t":"abort","id":3,"args":{"txn":4300}}"#]);
+    assert_eq!(abort[0]["value"]["steps"], json!(1));
+    let undo = zwire_host::store::kv_get("zwire", "__zbus_action");
+    assert_eq!(undo["a"], json!("undo"));
+    assert_eq!(
+        undo["steps"][0]["seq"].as_u64(),
+        Some(seq),
+        "the abort unwinds the same seq the forward call was stamped with"
+    );
+}
+
+/// Every forwarded action carries a unique stamp, because the worker uses it to execute an action
+/// exactly once across the several transports that deliver it. Two identical actions issued inside
+/// one millisecond must NOT collide: the worker would treat the second as an already-seen duplicate
+/// and silently drop it, turning a 40-step chain into a 39-step one.
+#[test]
+fn each_forwarded_action_gets_a_distinct_nonce() {
+    let _g = txn_guard();
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        let replies = serve(&[r#"{"t":"call","id":1,"verb":"browser.newTab","args":{}}"#]);
+        seen.push(
+            replies[0]["value"]["nonce"]
+                .as_u64()
+                .expect("a forwarded action reports the nonce it stamped"),
+        );
+        let kv = zwire_host::store::kv_get("zwire", "__zbus_action");
+        assert_eq!(
+            kv["_n"].as_u64(),
+            seen.last().copied(),
+            "the kv path carries the same stamp as the reply"
+        );
+    }
+    let mut sorted = seen.clone();
+    sorted.dedup();
+    assert_eq!(sorted.len(), seen.len(), "stamps collided: {seen:?}");
+    assert!(
+        seen.windows(2).all(|w| w[1] > w[0]),
+        "stamps must rise monotonically: {seen:?}"
+    );
+}

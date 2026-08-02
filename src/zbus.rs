@@ -38,6 +38,7 @@
 //! duplication.
 
 use std::io::{self, BufRead, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -360,6 +361,29 @@ impl Write for Capture {
 /// `zb_cmd` storage, which drives the existing action pipeline. Fire-and-forget (returns delivery
 /// count, not the browser result). Works when this process owns the zgui socket AND holds the HUD's
 /// subscription — the long-lived sysinfo host, which does both in practice.
+/// A monotonic, unique stamp for one forwarded browser action.
+///
+/// EVERY delivery path carries the same `_n` for a given action — the `zbus.action` publish, the peer
+/// broadcast, and the file-backed kv the `stryke_run` reply piggybacks. That is what lets the HUD
+/// worker accept all of them and still execute the action exactly once, instead of the old choice
+/// between a duplicate (two paths deliver) and a drop (only one path is wired).
+///
+/// Seeded from the wall clock so it keeps rising across a host restart, then advanced by one per
+/// action so a tight chain issued inside a single millisecond still gets distinct stamps — a
+/// collision there would silently DROP a step of the chain, which is worse than a duplicate.
+fn action_nonce() -> u64 {
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    NONCE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            Some(cur.max(ms) + 1)
+        })
+        .map_or(ms, |prev| prev.max(ms) + 1)
+}
+
 fn run_command(verb: &str, args: &Value) -> Value {
     if let Some(action) = verb.strip_prefix("browser.") {
         let mut data = serde_json::Map::new();
@@ -371,23 +395,21 @@ fn run_command(verb: &str, args: &Value) -> Value {
                 }
             }
         }
+        let nonce = action_nonce();
+        data.insert("_n".into(), json!(nonce));
         let payload = Value::Object(data);
-        // Same-process fast path.
+        // Same-process fast path: the HUD worker holds a `zbus.action` subscription on its persistent
+        // native port, so a chain of N actions arrives as N frames in order — the kv path below can
+        // only ever hold the LAST one.
         let delivered = crate::bus::publish("zbus.action", &payload);
         let forwarded = crate::peer::broadcast("zbus.action", &payload);
         // Cross-process delivery: the HUD's host process is usually NOT the one that owns the zgui
         // socket (a separate `serve` daemon does), so pub/sub alone reaches no subscriber there.
-        // Stamp the action into the file-backed KV with a monotonic nonce; background.js polls it on
-        // its sysinfo stream and runs any action it hasn't seen. `App::open("zwire")->call("browser.*")`
-        // then works regardless of which host answered the socket.
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let mut kv = payload.as_object().cloned().unwrap_or_default();
-        kv.insert("_n".into(), json!(nonce));
-        crate::store::kv_set("zwire", "__zbus_action", &Value::Object(kv));
-        return json!({ "ok": true, "action": action, "delivered": delivered, "forwarded": forwarded, "queued": true });
+        // Stamp the action into the file-backed KV; the `stryke_run` reply piggybacks it (session.rs)
+        // so `App::open("zwire")->call("browser.*")` works regardless of which host answered the
+        // socket. Same `_n` as the publish, so a doubly-delivered action still runs once.
+        crate::store::kv_set("zwire", "__zbus_action", &payload);
+        return json!({ "ok": true, "action": action, "nonce": nonce, "delivered": delivered, "forwarded": forwarded, "queued": true });
     }
     // Build the host request `{"cmd":verb, …args, "id":1}`.
     let mut obj = serde_json::Map::new();
@@ -539,7 +561,7 @@ pub fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
         match req.get("t").and_then(Value::as_str) {
             Some("call") => {
                 let verb = req.get("verb").and_then(Value::as_str).unwrap_or("");
-                let args = req.get("args").cloned().unwrap_or_else(|| json!({}));
+                let mut args = req.get("args").cloned().unwrap_or_else(|| json!({}));
                 // Outside a transaction this is exactly the pre-transaction path: no class check,
                 // no journal. Inside one, an `irreversible` verb is refused HERE rather than at
                 // abort time — the whole point of the class is that a chain never gets stranded
@@ -559,8 +581,21 @@ pub fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
                                 continue;
                             }
                             // `pure` changes nothing, so there is nothing to compensate.
+                            //
+                            // The journal here holds the ORDER; the HUD service worker holds the
+                            // PRE-STATE, which it can only file under a key both sides agree on.
+                            // Stamping the entry's `(txn, seq)` onto the forwarded action IS that
+                            // key: `run_command` copies every arg into the `zbus.action` payload,
+                            // so the worker sees `_seq` and journals what the action changed under
+                            // it. Without the stamp the worker cannot tell a transacted action from
+                            // an ordinary one, and `browser.undo` has nothing to look up.
                             "inverse" => {
-                                crate::txn::record(txn, verb, &args);
+                                if let Some(seq) = crate::txn::record(txn, verb, &args) {
+                                    if let Some(o) = args.as_object_mut() {
+                                        o.insert("_txn".into(), json!(txn));
+                                        o.insert("_seq".into(), json!(seq));
+                                    }
+                                }
                             }
                             _ => {}
                         }
