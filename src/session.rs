@@ -252,6 +252,42 @@ impl Session {
                 respond(out, msg, crate::zbus::txn_command(cmd, msg))
             }
 
+            /* ---- one bus verb, through the SAME gate + journal the `call` frame uses ----
+            A transaction only compensates what reached its journal, and the journal is
+            process-global. The Chromium HUD talks native messaging, not the bus socket, so
+            without this command its only way to run a `browser.*` verb was the extension's own
+            storage action bus — which the host never sees, never journals, and therefore never
+            unwinds on abort. That is a transaction that reports success while compensating
+            nothing. Routing the HUD's transacted steps through here puts them in the same
+            journal as a stryke script's, so `txn_abort` unwinds both. */
+            "call" => {
+                let verb = msg["verb"].as_str().unwrap_or("");
+                let args = msg
+                    .get("args")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let txn = msg["txn"].as_u64();
+                match crate::zbus::call_verb(verb, args, txn) {
+                    Ok(v) => respond(out, msg, json!({"ok": true, "result": v})),
+                    Err(e) => respond(out, msg, json!({"ok": false, "err": e})),
+                }
+            }
+
+            /* ---- the automation surface, incl. each verb's reversibility class (zbus REV) ----
+            The HUD's trigger editor reads this to tell an author, while they are still editing,
+            that a step cannot be reverted. Served from the Rust table so there is no JS mirror
+            to drift out of date. */
+            "verbs" => {
+                // `surface()` is shaped for the bus, where `reply()` supplies the envelope. A host
+                // command carries its own status, so stamp `ok` on rather than handing back the
+                // only reply in this dispatch that a caller cannot check.
+                let mut s = crate::zbus::surface();
+                if let Some(o) = s.as_object_mut() {
+                    o.insert("ok".into(), json!(true));
+                }
+                respond(out, msg, s)
+            }
+
             /* ---- stryke lifecycle hooks (ported from Audio-Haxor hooks.rs) ---- */
             "hooks_list" => respond(out, msg, hooks::list()),
             "hooks_events" => respond(out, msg, hooks::events()),

@@ -109,6 +109,7 @@ const SURFACE_VERBS: &[&str] = &[
     "sysinfo_start",
     "sysinfo_stop",
     "unsub",
+    "verbs",
     "watch_list",
     "watch_stop",
     "which",
@@ -274,6 +275,7 @@ const REV: &[(&str, &str)] = &[
     ("ping", "pure"),
     ("ps", "pure"),
     ("sysinfo_once", "pure"),
+    ("verbs", "pure"),
     ("watch_list", "pure"),
     ("which", "pure"),
     /* ---- browser tabs: worker journals {id,url,index,windowId,pinned,muted} ---- */
@@ -444,6 +446,46 @@ fn run_command(verb: &str, args: &Value) -> Value {
     json!({ "ok": false, "err": "no reply from host session" })
 }
 
+/// Dispatch one bus `call`: the reversibility gate, the journal stamp, and the command itself.
+///
+/// Shared by the NDJSON `{"t":"call"}` frame ([`serve_conn`]) and the plain `{"cmd":"call"}` host
+/// command ([`crate::session::Session`]), because a transaction is only coherent when every step in
+/// it reaches the SAME journal. The journal is process-global, so a caller that opens a transaction
+/// with one connection and calls verbs on another process journals nothing and compensates nothing
+/// on abort — an aborted chain that silently unwinds zero steps. Routing both entrypoints through
+/// here is what lets the Chromium HUD (native messaging) and a stryke script (the socket) share one
+/// transaction.
+///
+/// `Err` is the refusal of an `irreversible` verb while a transaction is open — the class check
+/// happens BEFORE the command runs, so a chain fails at its first un-undoable step rather than
+/// stranding itself half-compensated at abort time.
+pub fn call_verb(verb: &str, mut args: Value, txn: Option<u64>) -> Result<Value, String> {
+    // Outside a transaction this is exactly the pre-transaction path: no class check, no journal.
+    if crate::txn::any_open() && txn.is_none_or(crate::txn::is_open) {
+        match rev(verb) {
+            "irreversible" => return Err(format!("verb not reversible: {verb}")),
+            // `pure` changes nothing, so there is nothing to compensate.
+            //
+            // The journal here holds the ORDER; the HUD service worker holds the PRE-STATE, which
+            // it can only file under a key both sides agree on. Stamping the entry's `(txn, seq)`
+            // onto the forwarded action IS that key: `run_command` copies every arg into the
+            // `zbus.action` payload, so the worker sees `_seq` and journals what the action changed
+            // under it. Without the stamp the worker cannot tell a transacted action from an
+            // ordinary one, and `browser.undo` has nothing to look up.
+            "inverse" => {
+                if let Some(seq) = crate::txn::record(txn, verb, &args) {
+                    if let Some(o) = args.as_object_mut() {
+                        o.insert("_txn".into(), json!(txn));
+                        o.insert("_seq".into(), json!(seq));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(run_command(verb, &args))
+}
+
 /// Transaction control (`txn_begin` / `txn_commit` / `txn_abort`), dispatched from
 /// [`crate::session::Session`] so the frames and the plain host commands share one implementation.
 ///
@@ -489,7 +531,12 @@ pub fn txn_command(cmd: &str, args: &Value) -> Value {
 /// The automation surface — every host command (for discovery) plus a couple of state queries.
 /// Each verb carries its `rev` class (see [`rev`]) so a script can tell, before it builds a chain,
 /// which steps are safe to put inside `App::txn`.
-fn surface() -> Value {
+///
+/// Reachable as the `{"t":"verbs"}` bus frame AND as the plain `{"cmd":"verbs"}` host command, so
+/// the Chromium HUD's trigger editor classifies a chain from THIS table instead of mirroring [`REV`]
+/// in JavaScript — a mirror drifts the moment a verb is added here, and a drifted mirror tells the
+/// author a chain is revertible when the host will refuse it.
+pub fn surface() -> Value {
     let verbs: Vec<Value> = SURFACE_VERBS
         .iter()
         .map(|c| json!({ "id": *c, "label": *c, "rev": rev(c) }))
@@ -561,47 +608,12 @@ pub fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
         match req.get("t").and_then(Value::as_str) {
             Some("call") => {
                 let verb = req.get("verb").and_then(Value::as_str).unwrap_or("");
-                let mut args = req.get("args").cloned().unwrap_or_else(|| json!({}));
-                // Outside a transaction this is exactly the pre-transaction path: no class check,
-                // no journal. Inside one, an `irreversible` verb is refused HERE rather than at
-                // abort time — the whole point of the class is that a chain never gets stranded
-                // half-undone.
-                if crate::txn::any_open() {
-                    let txn = req.get("txn").and_then(Value::as_u64);
-                    if txn.is_none_or(crate::txn::is_open) {
-                        match rev(verb) {
-                            "irreversible" => {
-                                reply(
-                                    &mut w,
-                                    id,
-                                    false,
-                                    Value::Null,
-                                    Some(format!("verb not reversible: {verb}")),
-                                );
-                                continue;
-                            }
-                            // `pure` changes nothing, so there is nothing to compensate.
-                            //
-                            // The journal here holds the ORDER; the HUD service worker holds the
-                            // PRE-STATE, which it can only file under a key both sides agree on.
-                            // Stamping the entry's `(txn, seq)` onto the forwarded action IS that
-                            // key: `run_command` copies every arg into the `zbus.action` payload,
-                            // so the worker sees `_seq` and journals what the action changed under
-                            // it. Without the stamp the worker cannot tell a transacted action from
-                            // an ordinary one, and `browser.undo` has nothing to look up.
-                            "inverse" => {
-                                if let Some(seq) = crate::txn::record(txn, verb, &args) {
-                                    if let Some(o) = args.as_object_mut() {
-                                        o.insert("_txn".into(), json!(txn));
-                                        o.insert("_seq".into(), json!(seq));
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                let args = req.get("args").cloned().unwrap_or_else(|| json!({}));
+                let txn = req.get("txn").and_then(Value::as_u64);
+                match call_verb(verb, args, txn) {
+                    Ok(v) => reply(&mut w, id, true, v, None),
+                    Err(e) => reply(&mut w, id, false, Value::Null, Some(e)),
                 }
-                reply(&mut w, id, true, run_command(verb, &args), None);
             }
             Some("get") => {
                 let state = req.get("state").and_then(Value::as_str).unwrap_or("");

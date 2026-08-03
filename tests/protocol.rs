@@ -947,3 +947,135 @@ fn zgui_bus_owned_by_dedicated_daemon() {
     let _ = dup.kill();
     let _ = dup.wait();
 }
+
+/* ---- the HUD's transaction path: `call` over native messaging ----------------------------- */
+
+// The Chromium HUD reaches the host over native messaging, not the bus socket. Its transacted
+// steps therefore only compensate if the `call` host command lands in the SAME process-global
+// journal that `txn_begin`/`txn_abort` use. These two tests pin exactly that, because the failure
+// mode is silent: an aborted transaction that journaled nothing still replies `ok:true`, and the
+// HUD would report a clean revert having undone nothing at all.
+
+#[test]
+fn a_call_over_native_messaging_is_journaled_by_the_open_transaction() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+
+    nm_send(&mut si, &json!({"cmd": "txn_begin", "txn": 5100}));
+    assert_eq!(nm_recv_ack(&mut so)["ok"], json!(true));
+
+    // `browser.pinTab` is `inverse` in the REV table, so it must be recorded.
+    nm_send(
+        &mut si,
+        &json!({"cmd": "call", "verb": "browser.pinTab", "args": {}, "txn": 5100}),
+    );
+    let called = nm_recv_ack(&mut so);
+    assert_eq!(called["ok"], json!(true), "call refused: {called}");
+
+    nm_send(&mut si, &json!({"cmd": "txn_abort", "txn": 5100}));
+    let aborted = nm_recv_ack(&mut so);
+    assert_eq!(aborted["ok"], json!(true), "abort failed: {aborted}");
+    // The assertion that matters: the abort found the step. `steps: 0` is the silent-no-op bug.
+    assert_eq!(
+        aborted["steps"],
+        json!(1),
+        "the native-messaging call did not reach the journal — abort would compensate nothing: {aborted}"
+    );
+    // A journaled step means a `browser.undo` was forwarded carrying the reversed chain.
+    assert_eq!(
+        aborted["undo"]["action"],
+        json!("undo"),
+        "no browser.undo forwarded for the journaled step: {aborted}"
+    );
+
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn an_irreversible_verb_is_refused_while_a_transaction_is_open() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+
+    // Outside a transaction the same verb runs — the class gate must not be a blanket ban.
+    nm_send(
+        &mut si,
+        &json!({"cmd": "call", "verb": "browser.reopenTab", "args": {}}),
+    );
+    assert_eq!(
+        nm_recv_ack(&mut so)["ok"],
+        json!(true),
+        "an irreversible verb must still run when no transaction is open"
+    );
+
+    nm_send(&mut si, &json!({"cmd": "txn_begin", "txn": 5101}));
+    assert_eq!(nm_recv_ack(&mut so)["ok"], json!(true));
+
+    // `browser.reopenTab` has no compensation, so it is absent from REV and defaults to
+    // `irreversible`. Refusing it HERE is what stops a chain stranding itself half-undone.
+    nm_send(
+        &mut si,
+        &json!({"cmd": "call", "verb": "browser.reopenTab", "args": {}, "txn": 5101}),
+    );
+    let refused = nm_recv_ack(&mut so);
+    assert_eq!(
+        refused["ok"],
+        json!(false),
+        "an irreversible verb was accepted inside a transaction: {refused}"
+    );
+    assert!(
+        refused["err"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not reversible"),
+        "refusal did not name the reason: {refused}"
+    );
+
+    nm_send(&mut si, &json!({"cmd": "txn_abort", "txn": 5101}));
+    let aborted = nm_recv_ack(&mut so);
+    assert_eq!(
+        aborted["steps"],
+        json!(0),
+        "the refused verb must not have been journaled: {aborted}"
+    );
+
+    drop(si);
+    let _ = child.wait();
+}
+
+#[test]
+fn verbs_serves_the_reversibility_table_the_trigger_editor_reads() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+
+    nm_send(&mut si, &json!({"cmd": "verbs"}));
+    let surface = nm_recv_ack(&mut so);
+    let verbs = surface["verbs"].as_array().expect("a verbs array");
+    let class = |id: &str| -> String {
+        verbs
+            .iter()
+            .find(|v| v["id"] == json!(id))
+            .unwrap_or_else(|| panic!("{id} missing from the surface"))["rev"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    // One verb of each class, so a table served without `rev` (or with it flattened to a single
+    // value) fails rather than passing on the array being non-empty.
+    assert_eq!(class("browser.pinTab"), "inverse");
+    assert_eq!(class("browser.reload"), "pure");
+    assert_eq!(
+        class("browser.reopenTab"),
+        "irreversible",
+        "a verb absent from REV must be advertised as irreversible, not omitted"
+    );
+
+    drop(si);
+    let _ = child.wait();
+}
