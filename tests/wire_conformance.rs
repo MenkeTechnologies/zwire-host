@@ -311,7 +311,11 @@ fn a_journaled_action_is_forwarded_with_its_journal_key() {
     assert_eq!(replies[1]["ok"], json!(true));
     let stamped = zwire_host::store::kv_get("zwire", "__zbus_action");
     assert_eq!(stamped["a"], json!("closeTab"));
-    assert_eq!(stamped["n"], json!(1), "the caller's own args still ride along");
+    assert_eq!(
+        stamped["n"],
+        json!(1),
+        "the caller's own args still ride along"
+    );
     assert_eq!(stamped["_txn"], json!(4300));
     let seq = stamped["_seq"]
         .as_u64()
