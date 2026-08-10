@@ -172,6 +172,29 @@ a transaction is open is **refused at call time** with `verb not reversible: <id
 so a chain fails fast at the top instead of stranding itself half-undone at abort
 time.
 
+**Most of the surface is `irreversible`, deliberately.** The bus is scriptable
+everywhere; it is transactional only where a compensation genuinely exists.
+
+* **No host command is ever `inverse`.** The journal records a step's verb and
+  args, never its pre-state, so there is nothing to restore from — `fs_write`,
+  `kv_set`, `clipboard_set`, the `hooks_*` writers and `exec` are all
+  irreversible however obvious their opposite looks on paper. A host verb can
+  only be `pure`, and only when it neither writes, spawns, publishes, nor leaves
+  an OS-visible artifact.
+* **A `browser.*` verb is `inverse` only when the HUD journal can see it.** That
+  journal captures pre-state by observing real `chrome.tabs` / `chrome.windows`
+  events — created, removed, moved, detached, pinned, muted, url, activated,
+  zoomed, window created — and replays a matching set of inverse ops. Verbs whose
+  effects fall outside it (window state and bounds, tab groups, downloads,
+  bookmarks, the reading list, browsing data, extension management) journal
+  nothing, so classing one `inverse` would produce an abort that reports a clean
+  revert having restored nothing.
+
+Every verb that is deliberately left irreversible is listed with its reason in
+`tests/rev_coverage.rs`, and the test there fails if a verb is added to the
+surface without being classified or written down — so the table cannot quietly
+fall behind the surface it describes.
+
 Compensation for `browser.*` verbs is replayed by the HUD service worker, because
 only it can read the live browser — a `browser.*` forward call is fire-and-forget
 across the native port and its reply carries a delivery count, not a browser

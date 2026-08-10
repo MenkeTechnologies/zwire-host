@@ -250,6 +250,24 @@ const SURFACE_VERBS: &[&str] = &[
 /// Only `browser.*` verbs can be `"inverse"`: the HUD service worker captures each one's pre-state
 /// at execution time and replays the inverse (`browser.undo`). No host-side command has a
 /// compensation, so every host WRITE is `"irreversible"` here rather than optimistically classed.
+/// [`crate::txn`] journals a step's verb and args and nothing else — there is no pre-state anywhere
+/// on this side — so `kv_set`, `clipboard_set`, `fs_write` and friends stay irreversible no matter
+/// how obvious their "inverse" reads on paper.
+///
+/// WHAT MAKES A `browser.*` VERB `"inverse"` is narrower than "the browser could undo it". The HUD
+/// journal (`zwire/extensions/hud-internal/zjournal.js`) captures effects by OBSERVING chrome
+/// events, and it listens to exactly eight: `tabs.onCreated`, `onRemoved`, `onMoved`, `onDetached`,
+/// `onUpdated` (pinned / muted / url only), `onActivated`, `onZoomChange`, and `windows.onCreated`.
+/// It can replay exactly eight inverse ops: reopen, close, closeWindow, move, flags, activate,
+/// navigate, zoom. A verb whose effect falls OUTSIDE that vocabulary — a window state or bounds
+/// change, a tab group, a download, a bookmark, a reading-list entry, browsing data, an extension
+/// toggle — journals NOTHING, so classing it `"inverse"` would produce an abort that reports a
+/// clean revert having compensated nothing. That failure is silent, which is why the bar here is
+/// "the journal observes and replays every effect this verb produces", not "an undo is imaginable".
+///
+/// The verbs deliberately left `"irreversible"`, each with the reason, are enumerated in
+/// `tests/rev_coverage.rs`. That ledger plus this table must together cover [`SURFACE_VERBS`], so a
+/// verb added to the surface fails the suite until someone classifies it.
 const REV: &[(&str, &str)] = &[
     /* ---- host reads: safe inside a transaction, nothing to unwind ---- */
     ("clipboard_get", "pure"),
@@ -289,18 +307,32 @@ const REV: &[(&str, &str)] = &[
     ("browser.openTab", "inverse"),
     ("browser.duplicateTab", "inverse"),
     ("browser.newWindow", "inverse"),
+    // `management.get` is a read; the only effect is the one `tabs.create` for the options page,
+    // which the worker journals as a `close` exactly like `openTab`.
+    ("browser.extensionOptions", "inverse"),
     /* ---- browser tab flags: worker journals the prior flag per affected tab ---- */
     ("browser.pinTab", "inverse"),
     ("browser.unpinTab", "inverse"),
     ("browser.muteTab", "inverse"),
     ("browser.unmuteTab", "inverse"),
     ("browser.muteOthers", "inverse"),
+    // Bulk mute is `muteOthers` over the whole window: one `mutedInfo` update per tab whose flag
+    // actually changed, journaled as that tab's prior `muted`. Muting never reorders the strip, so
+    // there are no `move` ops to interleave and the replay is order-independent. (Bulk PIN is not
+    // here — pinning moves tabs, see the ledger in `tests/rev_coverage.rs`.)
+    ("browser.muteAll", "inverse"),
+    ("browser.unmuteAll", "inverse"),
     /* ---- browser tab position: worker journals the prior index ---- */
     ("browser.moveTabLeft", "inverse"),
     ("browser.moveTabRight", "inverse"),
     ("browser.moveTabFirst", "inverse"),
     ("browser.moveTabLast", "inverse"),
     ("browser.tabToNewWindow", "inverse"),
+    // One `tabs.move` per unpinned tab, each journaled from `onMoved.fromIndex` (authoritative
+    // pre-state, not re-derived). A single-element move is inverted by moving that element back to
+    // its recorded index — the other tabs keep their relative order — so replaying the moves
+    // newest-first restores the exact prior permutation.
+    ("browser.sortTabs", "inverse"),
     /* ---- browser selection: worker journals the prior active tab ---- */
     ("browser.activate", "inverse"),
     ("browser.firstTab", "inverse"),
@@ -315,12 +347,13 @@ const REV: &[(&str, &str)] = &[
     ("browser.zoomReset", "inverse"),
     ("browser.goBack", "inverse"),
     ("browser.goForward", "inverse"),
+    // `home` is `open` with a fixed target: one `tabs.update({url})` on the active tab, journaled
+    // as `navigate` back to the url it was showing.
+    ("browser.home", "inverse"),
     /* ---- browser reads / idempotent refreshes ---- */
     ("browser.reload", "pure"),
     ("browser.reloadHard", "pure"),
     ("browser.reloadAll", "pure"),
-    ("browser.screenshot", "pure"),
-    ("browser.detectLanguage", "pure"),
     /* ---- transaction control itself: never journaled, never compensated ---- */
     ("txn_begin", "pure"),
     ("txn_commit", "pure"),
