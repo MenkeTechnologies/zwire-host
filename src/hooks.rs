@@ -350,7 +350,8 @@ pub fn events() -> Value {
             { "name": "terminal-opened", "desc": "The HUD terminal overlay opened in a tab", "sample": { "tabId": 12 } },
             { "name": "terminal-closed", "desc": "The HUD terminal overlay closed in a tab", "sample": { "tabId": 12 } },
             { "name": "scheme-changed", "desc": "The HUD color scheme changed", "sample": { "scheme": "matrix" } },
-            { "name": "palette-command", "desc": "A ⌘K palette command ran", "sample": { "command": "New tab" } },
+            { "name": "palette-command", "desc": "A ⌘K palette command ran — match on `id` (a stable slug); `command` is the display label and moves with the locale", "sample": { "id": "zw.newTab", "command": "New tab" } },
+            { "name": "zdiagnostic", "desc": "A UI layer reported a wiring problem it will not print (an id-less or label-keyed palette row)", "sample": { "source": "zpalette", "message": "palette row \"…\" carries no id" } },
             { "name": "session-saved", "desc": "A tmux/session snapshot was saved", "sample": { "count": 3 } },
             { "name": "pane-split", "desc": "A tmux pane was split", "sample": { "dir": "h", "paneId": 7 } },
             { "name": "audio-eq-changed", "desc": "The browser-wide audio engine config changed", "sample": { "spec": "0.0;gain,1.2" } }
