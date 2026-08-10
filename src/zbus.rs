@@ -566,9 +566,9 @@ pub fn txn_command(cmd: &str, args: &Value) -> Value {
 /// which steps are safe to put inside `App::txn`.
 ///
 /// Reachable as the `{"t":"verbs"}` bus frame AND as the plain `{"cmd":"verbs"}` host command, so
-/// the Chromium HUD's trigger editor classifies a chain from THIS table instead of mirroring [`REV`]
-/// in JavaScript — a mirror drifts the moment a verb is added here, and a drifted mirror tells the
-/// author a chain is revertible when the host will refuse it.
+/// the Chromium HUD's trigger editor classifies a chain from THIS table instead of mirroring the
+/// crate-private `REV` table in JavaScript — a mirror drifts the moment a verb is added here, and a
+/// drifted mirror tells the author a chain is revertible when the host will refuse it.
 pub fn surface() -> Value {
     let verbs: Vec<Value> = SURFACE_VERBS
         .iter()
