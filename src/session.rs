@@ -22,6 +22,10 @@ pub fn caps() -> Vec<&'static str> {
         "exec",
         "jobs",
         "bus",
+        // The suite bus CLIENT (`suite_*`): this host can call verbs on the OTHER apps' sockets.
+        // Advertised so a caller can feature-test it instead of discovering its absence as an
+        // "unknown command" from a step that was supposed to deliver something.
+        "suite",
         "peer",
         "watch",
         "open",
@@ -270,6 +274,25 @@ impl Session {
                 match crate::zbus::call_verb(verb, args, txn) {
                     Ok(v) => respond(out, msg, json!({"ok": true, "result": v})),
                     Err(e) => respond(out, msg, json!({"ok": false, "err": e})),
+                }
+            }
+
+            /* ---- the OTHER apps on the bus (suite.rs — the client leg) ----
+            `call`/`verbs` above answer for THIS app; these reach out. A page trigger, a ⌘K step or
+            a pane pipeline names another running app and gets its reply back into the browser.
+            Enumeration dials each candidate because the socket directory keeps entries from
+            processes that died without unlinking. */
+            "suite_list" | "suite_verbs" | "suite_call" | "suite_get" => {
+                match crate::suite::command(cmd, msg) {
+                    Some(v) => respond(out, msg, v),
+                    // Unreachable: the arm and `suite::command` list the same four commands, and
+                    // `tests/protocol.rs` pins that. Answering rather than falling silent keeps a
+                    // future fifth command from hanging a caller that is waiting on a reply.
+                    None => respond(
+                        out,
+                        msg,
+                        json!({"ok": false, "err": format!("unknown suite command: {cmd}")}),
+                    ),
                 }
             }
 

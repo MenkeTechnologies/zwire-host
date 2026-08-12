@@ -42,6 +42,9 @@ pub mod session;
 pub mod store;
 pub mod stryke_lsp;
 pub mod stryke_runner;
+/// Suite bus CLIENT — the mirror of [`zbus`]. Where `zbus` makes zwire reachable as
+/// `App::open("zwire")`, this dials the OTHER apps' sockets so the browser can call THEIR verbs.
+pub mod suite;
 #[cfg(feature = "sysinfo-caps")]
 pub mod sysmon;
 #[cfg(feature = "tauri")]

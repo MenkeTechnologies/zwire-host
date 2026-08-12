@@ -56,7 +56,8 @@ transport, and the whole thing is also a **Rust library** so sibling hosts (e.g.
 Extensions, editors, and plugins can't read the machine or spawn a shell.
 `zwire-host` does the privileged work once and hands it to everyone: a live
 statusbar (cpu / mem / net / battery / temp …), an embedded terminal, a
-filesystem crawler, a command runner, and a small state store. Shipping it as
+filesystem crawler, a command runner, a small state store, and a client onto the
+GUI Automation Bus so one app can call another's typed verbs. Shipping it as
 one static Rust binary means the consuming bundle has **zero runtime
 dependencies** — no system Python, no `pip install psutil`, nothing to break on
 a fresh machine.
@@ -209,6 +210,41 @@ reaches the worker over more than one transport (the `zbus.action` subscription
 and the kv the `stryke_run` reply piggybacks), and the worker runs each `_n`
 exactly once — so a chain is never dropped when only one transport is live, and
 never doubled when both are.
+
+**Suite bus client** (`src/suite.rs` — calling the OTHER apps on the GUI Automation Bus)
+
+The automation bus above makes this host *reachable* as `App::open("zwire")`. These
+four commands are the mirror leg: they dial **another** running app's socket
+(`$XDG_RUNTIME_DIR/zgui/<app>.sock`, else `$TMPDIR/zgui`, else `/tmp/zgui`; the named
+pipe `\\.\pipe\<app>.sock` on Windows) and speak the same NDJSON frames from the client
+side. That is what lets the browser drive the rest of the suite — a page trigger, a ⌘K
+step or a pane pipeline naming a verb in `zcite` / `zreq` / `zpdf` / … and getting its
+return value back.
+
+| Message | Reply / effect |
+|---|---|
+| `{"cmd":"suite_list"}` | `{ok,apps:[…],probed:N}` — the apps actually **running**, each proven by a dial. `probed` counts socket entries seen, so "nothing running" is distinguishable from "nothing installed". |
+| `{"cmd":"suite_verbs","app":"zcite"}` | `{ok,result:{app,verbs,state,events}}` — that app's typed surface, including each verb's `rev` class where it publishes one. |
+| `{"cmd":"suite_call","app":"zcite","verb":"item.add","args":{…}}` | `{ok,result:<value>}` — invoke a verb and return its value; `{ok:false,err}` if the app is not running or refuses. |
+| `{"cmd":"suite_get","app":"zcite","state":"selection"}` | `{ok,result:<value>}` — read one of that app's state queries. |
+
+A socket **file** is not a running app: the socket directory keeps entries from
+processes that died without unlinking, so enumeration dials every candidate rather than
+listing the directory. A bus name containing a path separator or `..` is refused before
+any dial, because the name becomes a filename. One connection per exchange — the peer's
+bridge journals a transaction against a *held* connection, so a shared long-lived
+connection would silently enlist unrelated calls in whatever transaction a previous
+caller left open.
+
+`suite_list` / `suite_verbs` / `suite_get` are `pure`; **`suite_call` is
+`irreversible`** and is refused inside an open transaction. The write lands in another
+process with its own journal, and this host records a verb and its args, never the
+peer's pre-state — so an "inverse" here would be a guess. Cross-app rollback is a real
+thing with an existing owner: the suite's saga coordinator enlists each participant
+under that participant's own transaction and fans `abort` back out, so every app
+compensates through the inverse it declared. A chain that needs all-or-nothing across
+apps asks for it **through** `suite_call` instead of having this host invent a second
+coordinator.
 
 **stryke hooks & scripting** (runs [`stryke`](https://github.com/MenkeTechnologies/strykelang) via a bundled sidecar — the browser never spawns it directly)
 

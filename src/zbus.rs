@@ -105,6 +105,13 @@ const SURFACE_VERBS: &[&str] = &[
     "stryke_lsp_stop",
     "stryke_run",
     "sub",
+    // SUITE — the other apps on the bus (suite.rs, the client leg). `suite_call` reaches a verb
+    // inside a DIFFERENT process, so it is the one command here whose effect this host can neither
+    // observe nor undo.
+    "suite_call",
+    "suite_get",
+    "suite_list",
+    "suite_verbs",
     "sysinfo_once",
     "sysinfo_start",
     "sysinfo_stop",
@@ -293,6 +300,13 @@ const REV: &[(&str, &str)] = &[
     ("ping", "pure"),
     ("ps", "pure"),
     ("sysinfo_once", "pure"),
+    // Suite READS. `suite_list` dials each candidate socket and hangs up; `suite_verbs` asks a peer
+    // for its manifest; `suite_get` reads a peer `state` query, which the bus contract defines as
+    // read-only (`GUI_AUTOMATION_BUS.md` §4: "state — read-only queries"). None of the three leaves
+    // an artifact on either side of the socket. `suite_call` is the write, and is irreversible.
+    ("suite_get", "pure"),
+    ("suite_list", "pure"),
+    ("suite_verbs", "pure"),
     ("verbs", "pure"),
     ("watch_list", "pure"),
     ("which", "pure"),

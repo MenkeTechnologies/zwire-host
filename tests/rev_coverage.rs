@@ -64,6 +64,17 @@ const DELIBERATELY_IRREVERSIBLE: &[&str] = &[
     "kill",
     "open",
     "stryke_run",
+    /* ---- host: acts inside ANOTHER process ----------------------------------------------------
+    `suite_call` invokes a verb on a different app over its bus socket (suite.rs). Whatever that
+    verb did happened in that app's address space and its own transaction journal, neither of which
+    this host can read or replay — `txn.rs` journals a verb and its args, so an "inverse" here would
+    have to guess the peer's opposite verb and its arguments. Cross-app rollback is a real thing and
+    it already has an owner: zgo's saga coordinator enlists each participant under its OWN
+    transaction and fans `abort` back out, so each app compensates through the inverse it declared.
+    A chain that needs all-or-nothing across apps calls `saga.run` THROUGH this verb rather than
+    asking zwire to invent a second coordinator. (`suite_list` / `suite_verbs` / `suite_get` are
+    reads and are classed `pure` in `REV`.) */
+    "suite_call",
     /* ---- host: mutates stored automation ------------------------------------------------------
     hooks.rs rewrites `hooks.json` and the per-hook `<id>.st` script in place. `hooks_delete` also
     unlinks the script file. No prior manifest or script text is captured anywhere. */
