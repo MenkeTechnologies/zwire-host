@@ -15,10 +15,26 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use serde_json::{json, Value};
 use zwire_host::suite;
+
+/// One test at a time.
+///
+/// [`sandbox`] calls `std::env::set_var` while other tests are already calling `suite::call`, which
+/// reads the same variable through `getenv` — and a `setenv` concurrent with a `getenv` is not safe
+/// on glibc or on Darwin. It shows up as roughly one run in thirty resolving a torn path and failing
+/// with `not running on the bus (Invalid argument (os error 22))`: a flake with no bug behind it,
+/// which is the worst kind, because the next real failure gets waved through as "that flaky one".
+/// Ordering the tests is what removes the concurrency the race needs. Poisoning is ignored: a
+/// panicking test has already failed, and poisoning would turn it into a whole-file failure.
+fn serialize() -> MutexGuard<'static, ()> {
+    static L: OnceLock<Mutex<()>> = OnceLock::new();
+    L.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
 
 /// Point the client at a private socket directory, once per test process.
 ///
@@ -93,6 +109,7 @@ fn refuse(req: &Value) -> Value {
 
 #[test]
 fn verbs_call_and_get_reach_a_live_peer_and_return_its_value() {
+    let _g = serialize();
     spawn_peer("faux-echo", echo);
 
     let surface = suite::verbs("faux-echo").expect("verbs");
@@ -111,6 +128,7 @@ fn verbs_call_and_get_reach_a_live_peer_and_return_its_value() {
 
 #[test]
 fn a_peer_error_reply_becomes_an_error_not_a_silent_null() {
+    let _g = serialize();
     spawn_peer("faux-refuse", refuse);
     let err = suite::call("faux-refuse", "nope", json!({})).unwrap_err();
     assert!(err.contains("no such verb"), "unexpected error: {err}");
@@ -118,6 +136,7 @@ fn a_peer_error_reply_becomes_an_error_not_a_silent_null() {
 
 #[test]
 fn call_with_no_args_still_sends_an_object() {
+    let _g = serialize();
     // `args` is `#[serde(default)]` on the bridge side, but a null there deserializes to `Value::Null`
     // and a handler indexing it gets nothing. Normalizing to `{}` in the client is what keeps a
     // zero-argument verb callable from a palette step that supplied no JSON body.
@@ -128,6 +147,7 @@ fn call_with_no_args_still_sends_an_object() {
 
 #[test]
 fn list_skips_a_stale_socket_file_and_keeps_the_live_one() {
+    let _g = serialize();
     spawn_peer("faux-live", echo);
     // A file with a .sock name and nobody listening — exactly what a crashed app leaves behind.
     std::fs::write(sandbox().join("faux-dead.sock"), b"").expect("write stale socket file");
@@ -158,6 +178,7 @@ fn list_skips_a_stale_socket_file_and_keeps_the_live_one() {
 
 #[test]
 fn a_peer_that_hangs_up_without_replying_is_an_error() {
+    let _g = serialize();
     // Bind and immediately drop the listener's accept loop: the connect succeeds, the read gets EOF.
     let path = sandbox().join("faux-mute.sock");
     let _ = std::fs::remove_file(&path);
@@ -168,14 +189,24 @@ fn a_peer_that_hangs_up_without_replying_is_an_error() {
         }
     });
     let err = suite::call("faux-mute", "x", json!({})).unwrap_err();
+    // WHICH syscall notices the hangup is a race, not a behaviour. If our request lands before the
+    // peer's `drop` the write succeeds and the read hits EOF ("closed without replying"); if the
+    // drop wins, the write itself fails with EPIPE. Both are the same event — the peer went away
+    // before answering — and pinning only the first outcome made this test fail about one run in
+    // ten on a loaded machine. What must stay pinned is that a mute peer is an ERROR naming the
+    // peer, never a silent success or a hang.
     assert!(
-        err.contains("closed without replying") || err.contains("read"),
+        err.starts_with("faux-mute: ")
+            && (err.contains("closed without replying")
+                || err.contains("read:")
+                || err.contains("write:")),
         "unexpected error: {err}"
     );
 }
 
 #[test]
 fn suite_commands_dispatch_through_the_host_command_table() {
+    let _g = serialize();
     spawn_peer("faux-cmd", echo);
 
     let v = suite::command(
