@@ -26,7 +26,13 @@ pub fn handle(cmd: &str, req: &Value) -> Value {
         "fs_stat" => stat(req),
         "fs_mkdir" => mkdir(req),
         "fs_rm" => rm(req),
-        _ => json!({"ok": false, "err": "unknown_cmd"}),
+        // Everything else `fs_`-prefixed belongs to the extended set (the file
+        // browser's ops). `fsx` returns None for a name it doesn't own, so a
+        // genuine typo still reports `unknown_cmd` rather than a silent success.
+        other => match crate::fsx::handle(other, req) {
+            Some(reply) => reply,
+            None => json!({"ok": false, "err": "unknown_cmd"}),
+        },
     }
 }
 

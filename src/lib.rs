@@ -28,6 +28,10 @@ pub mod api;
 pub mod bus;
 pub mod exec;
 pub mod fsops;
+/// Extended filesystem ops — hashing, archives, diff, dir compare, duplicate
+/// detection, git status, xattrs, trash — behind the same `fs_*` command prefix
+/// as [`fsops`]. These back the shared file browser's host contract.
+pub mod fsx;
 pub mod hooks;
 pub mod hostlog;
 pub mod jobs;

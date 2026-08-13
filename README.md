@@ -113,6 +113,41 @@ multiplex many in-flight requests, streams, and terminals over one connection.
 | `{"cmd":"fs_walk","path":…,"depth"?,"ext"?,"dirs_only"?,"contains"?}` | **recursive crawl** → `{count,truncated,entries:[{path,name,dir,size}]}`. |
 | `{"cmd":"fs_stat" / "fs_mkdir" / "fs_rm","path":…}` | stat / mkdir -p / remove (`recursive` for dirs). |
 
+**File browser ops** — the wider surface behind a graphical file manager (`src/fsx.rs`).
+These reply `{ok:true,data:…}` / `{ok:false,err:…}`; argument names are snake_case.
+
+| Message | Reply / effect |
+|---|---|
+| `{"cmd":"fs_list_dir","dir_path":…,"include_hidden"?}` | `{entries:[{name,path,isDir,size,sizeFormatted,modified,created,ext}],path}`, directories first. |
+| `{"cmd":"fs_list_subdirs","dir_path":…,"include_hidden"?}` | `[{name,path}]` — directories only, for a tree pane. |
+| `{"cmd":"fs_get_info","path":…}` | kind · recursive size + item count · mtime/ctime/atime · mode octal + `ls -l` string · uid/gid · symlink target. |
+| `{"cmd":"fs_folder_size","folder_path":…,"timeout_ms"?}` | `{bytes,files}` — bounded recursive walk. |
+| `{"cmd":"fs_disk_usage","path":…}` | `{total,available,used,usedPct,mount}` for the mount holding the path (needs `sysinfo-caps`). |
+| `{"cmd":"fs_xattrs","path":…}` | `[{name,size}]` extended attributes (Unix). |
+| `{"cmd":"fs_git_status","dir_path":…}` | `{<abs path>: "<XY>"}` porcelain codes; empty outside a repo. |
+| `{"cmd":"fs_hash","path":…,"algos"?}` | `{path,size,digests:{sha256}}` — streamed SHA-256. |
+| `{"cmd":"fs_grep","root":…,"needle":…,"case_insensitive"?,"max_results"?}` | `[{path,line,text}]`; skips dotdirs, binaries and files > 4 MiB. |
+| `{"cmd":"fs_find_duplicates","dir":…,"recursive"?,"min_size_bytes"?}` | `[{hash,size,paths}]` — grouped by content, biggest reclaim first. |
+| `{"cmd":"fs_compare_dirs","dir_a":…,"dir_b":…}` | `{onlyInA,onlyInB,different}`; equal-size files are confirmed by hash. |
+| `{"cmd":"fs_diff","path_a":…,"path_b":…}` | `[{tag,aLineStart,aLineEnd,bLineStart,bLineEnd,text}]` unified text diff. |
+| `{"cmd":"fs_compress","paths":[…],"archive_path":…}` | write a deflate `.zip`. |
+| `{"cmd":"fs_extract","archive_path":…,"dest_dir":…}` | read `.zip` / `.tar` / `.tar.gz` / `.tgz` into a NEW directory (zip-slip guarded). |
+| `{"cmd":"fs_read_file_base64" / "fs_read_head" / "fs_read_head_bytes","file_path":…,"max_bytes"?}` | capped whole-file base64 / head as text / head as raw bytes. |
+| `{"cmd":"fs_create_dir" / "fs_create_file","dir_path"\|"file_path":…}` | create; refuses an existing path. |
+| `{"cmd":"fs_copy_path","src":…,"dest":…}` / `{"cmd":"fs_duplicate","path":…}` | copy a file or tree / make the next free `… copy` sibling. |
+| `{"cmd":"fs_rename_file","old_path":…,"new_path":…}` | rename / move. |
+| `{"cmd":"fs_delete_file","file_path":…}` | delete a file, or a directory recursively. |
+| `{"cmd":"fs_move_to_trash","file_path":…}` | recoverable delete via the OS trash. |
+| `{"cmd":"fs_secure_delete","file_path":…}` | zero the bytes, fsync, then unlink. Refuses directories. |
+| `{"cmd":"fs_touch","file_path":…}` | create if absent, then set atime + mtime to now. |
+| `{"cmd":"fs_chmod","path":…,"mode_octal":…}` | set permission bits (Unix). |
+| `{"cmd":"fs_symlink_retarget","path":…,"new_target":…}` | repoint an existing symlink. |
+| `{"cmd":"fs_home_dir"}` | the home directory `~` expands to. |
+
+`fs_git_status` shells out to `git` — the one op here that calls an external
+program, because git already answers that question exactly and a second
+implementation would be a second, drifting answer. Everything else is in-process.
+
 **File watching** (streaming observers, keyed by `id`)
 
 | Message | Reply / effect |

@@ -49,13 +49,34 @@ serde_json = "1"
 toml = "0.8"
 base64 = "0.22"
 sysinfo = { version = "0.33", optional = true }
+# ── file-browser ops (`fsx`) ──
+# Content fingerprints for fs_hash / fs_compare_dirs / fs_find_duplicates.
+sha2 = "0.10"
+# Unified text diff for fs_diff (Myers / Patience).
+similar = "2"
+# Archive write (fs_compress) + read (fs_extract).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+# Cross-platform atime/mtime set for fs_touch.
+filetime = "0.2"
+# Recoverable delete (fs_move_to_trash) via the OS trash, not unlink.
+trash = "5"
+# Formats mtime/ctime as the `%Y-%m-%d %H:%M` the browser's date columns render.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 portable-pty = { version = "0.9.0", optional = true }
 tauri = { version = "2", optional = true, default-features = false }
 
 # The socket daemon uses native local IPC per platform: std Unix domain sockets
 # on macOS/Linux (no dep), and named pipes via `interprocess` on Windows.
+[target.'cfg(unix)'.dependencies]
+# Extended attributes for fs_xattrs — Unix-only.
+xattr = "1"
+
 [target.'cfg(windows)'.dependencies]
 interprocess = "2"
 
 [dev-dependencies]
 serde_json = "1"
+# `fsx_ops` backdates a file to prove fs_touch really refreshes mtime.
+filetime = "0.2"

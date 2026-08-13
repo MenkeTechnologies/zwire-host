@@ -52,6 +52,40 @@ const DELIBERATELY_IRREVERSIBLE: &[&str] = &[
     "kv_del",
     "kv_merge",
     "kv_set",
+    /* ---- host: the file browser's mutating ops (fsx.rs) ---------------------------------------
+    Every verb below changes the filesystem, and `txn.rs` journals the verb and its args — never
+    the bytes, mode, timestamps or link target that were there first. So none of them can be
+    replayed backwards, even where an inverse verb exists in the surface.
+
+    Destroying: `fs_delete_file` removes a file or a whole tree; `fs_secure_delete` first
+    OVERWRITES the file's bytes with zeros and fsyncs before unlinking, so it is irreversible in
+    the strongest sense available — the prior contents no longer exist on the device.
+    `fs_move_to_trash` is recoverable by the USER from the OS trash, but not by this process: the
+    trash entry's identifier is never captured, so an abort has nothing to address.
+
+    Creating: `fs_create_dir`, `fs_create_file`, `fs_copy_path`, `fs_duplicate`, `fs_compress` and
+    `fs_extract` all leave new paths on disk. Deleting them as a compensation would be a guess —
+    `fs_extract` in particular writes an unbounded set of entries, and only the archive knows
+    which. `fs_touch` additionally CREATES the file when it is absent, so even its "just a
+    timestamp" case is not uniformly a metadata-only change.
+
+    Rewriting in place: `fs_rename_file` moves a path (and silently replaces an existing
+    destination, per `std::fs::rename`); `fs_chmod` replaces the permission bits without reading
+    the old ones; `fs_symlink_retarget` UNLINKS the symlink and recreates it, so the previous
+    target is gone the moment the first step succeeds; `fs_touch` overwrites atime and mtime. */
+    "fs_chmod",
+    "fs_compress",
+    "fs_copy_path",
+    "fs_create_dir",
+    "fs_create_file",
+    "fs_delete_file",
+    "fs_duplicate",
+    "fs_extract",
+    "fs_move_to_trash",
+    "fs_rename_file",
+    "fs_secure_delete",
+    "fs_symlink_retarget",
+    "fs_touch",
     /* ---- host: runs a program ----------------------------------------------------------------
     Whatever the child did is outside this process and outside any journal. `hooks_test_run` is
     documented as a dry run only in the sense that it does not DISPATCH the parsed actions — it
