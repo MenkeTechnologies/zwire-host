@@ -57,7 +57,9 @@ Extensions, editors, and plugins can't read the machine or spawn a shell.
 `zwire-host` does the privileged work once and hands it to everyone: a live
 statusbar (cpu / mem / net / battery / temp …), an embedded terminal, a
 filesystem crawler, a command runner, a small state store, and a client onto the
-GUI Automation Bus so one app can call another's typed verbs. Shipping it as
+GUI Automation Bus so one app can call another's typed verbs — and, in the other
+direction, it publishes **what the browser is currently rendering** as typed
+state any app on that bus can read. Shipping it as
 one static Rust binary means the consuming bundle has **zero runtime
 dependencies** — no system Python, no `pip install psutil`, nothing to break on
 a fresh machine.
@@ -280,6 +282,50 @@ under that participant's own transaction and fans `abort` back out, so every app
 compensates through the inverse it declared. A chain that needs all-or-nothing across
 apps asks for it **through** `suite_call` instead of having this host invent a second
 coordinator.
+
+**The rendered page as typed state** (`src/page.rs` — the browser answering, not acting)
+
+`suite_*` above lets the browser reach OUT; `browser.*` lets a script reach IN and act.
+This is the third direction: a script **reads what the browser is rendering right now** —
+after the login, after the JavaScript, inside the session the user is actually in — as
+typed state on the same bus, with the same frames it uses for any other app.
+
+```jsonc
+{"t":"get","id":1,"state":"page.tables"}    // the tables on the active tab, as rows of cells
+{"t":"call","id":2,"verb":"page.extract","args":{"selector":"h2 a","attr":"href"}}
+{"t":"call","id":3,"verb":"page.assert","args":{"state":"page.text","op":"contains","value":"Order confirmed"}}
+```
+
+| Message | Reply / effect |
+|---|---|
+| `{"cmd":"page_states"}` | `{ok,states:[…],verbs:[…],ops:[…],serving}` — the projection catalogue, the two verbs, and the assertion vocabulary. |
+| `{"cmd":"page_get","state":"page.links","args":{…}}` | `{ok,state,value}` — one typed projection of the live DOM. `args` accepts `tabId` / `urls` (a regex naming a background tab) / `timeout_ms`. |
+| `{"cmd":"page_get","state":"page.assert","args":{"state":…,"op":…,"value":…}}` | project **and test** in one call: `{ok:true,pass:true}`, or `{ok:false,pass:false,err}` when the page does not satisfy it. |
+| `{"cmd":"page_serve"}` | the HUD worker claiming its host process as the browser's page endpoint (binds `zgui/zwire-page.sock`). |
+| `{"cmd":"page_reply","qid":N,…}` | the HUD worker delivering one answer. Never sent by anything else. |
+
+Projections: `page.url` · `page.title` · `page.text` · `page.links` · `page.headings` ·
+`page.tables` · `page.forms` · `page.meta` · `page.selection`, plus `page.extract` for
+anything the fixed set does not name. Assertion ops: `contains` · `not_contains` ·
+`equals` · `empty` · `nonempty` · `count_at_least` · `count_at_most`.
+
+Two things are deliberately absent. There are **no page writes** — mutation already
+exists as `browser.*` verbs with a compensation journal behind them, and a second,
+unjournaled write path would be a way to change the browser that `txn_abort` could not
+unwind. And `page.forms` publishes a form's **shape** — action, method, field names and
+types — and never a field's value, because autofilled credentials are on the page too.
+Every `page.*` verb is therefore `pure`: safe to read inside an open transaction, which
+is what lets a postcondition decide whether that transaction commits.
+
+Mechanically a query is a **rendezvous**, because the DOM is a process away. Only one
+host process is attached to the browser (the long-lived `connectNative` one), and it is
+almost never the process that owns `zgui/zwire.sock` — so the attached process binds a
+second endpoint, `zgui/zwire-page.sock`, and every other host process forwards to it
+with the ordinary bus client. It publishes the query on `zbus.query` with a correlation
+id, the HUD worker projects the tab and answers `page_reply`, and the waiting call wakes
+on that exact id. Nobody polls. A closed browser fails the dial immediately — "not
+attached" rather than a five-second wait — and a page read always answers on its own
+thread, because in the attached process the query and its answer share one connection.
 
 **stryke hooks & scripting** (runs [`stryke`](https://github.com/MenkeTechnologies/strykelang) via a bundled sidecar — the browser never spawns it directly)
 

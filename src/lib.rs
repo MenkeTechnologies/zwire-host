@@ -36,6 +36,10 @@ pub mod hooks;
 pub mod hostlog;
 pub mod jobs;
 pub mod osops;
+/// The rendered PAGE as typed state on the suite bus — `get page.tables` answered from the live,
+/// authenticated DOM instead of from a re-fetch. The mirror of [`zbus`]: that module moves commands
+/// into the browser, this one moves data out of it.
+pub mod page;
 pub mod peer;
 #[cfg(feature = "sysinfo-caps")]
 pub mod procs;

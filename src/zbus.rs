@@ -119,6 +119,14 @@ const SURFACE_VERBS: &[&str] = &[
     "meter_stream",
     "notify",
     "open",
+    // PAGE — the rendered page as typed state (page.rs). The projections themselves are appended by
+    // `surface()` from `page::STATES` rather than duplicated here, so the catalogue has one home.
+    // These four are the plumbing: the pull, its discovery, and the two frames the HUD service
+    // worker sends back over its own native port.
+    "page_get",
+    "page_reply",
+    "page_serve",
+    "page_states",
     "peer",
     "peer_connect",
     "peers",
@@ -352,6 +360,13 @@ const REV: &[(&str, &str)] = &[
     ("suite_get", "pure"),
     ("suite_list", "pure"),
     ("suite_verbs", "pure"),
+    // Page READS. `page_states` returns the catalogue; `page_get` publishes a query and waits for
+    // the browser to project a piece of the DOM back. Neither writes anything on either side of the
+    // native port — `page.rs` serves no page WRITES at all, which is what makes the whole namespace
+    // safe inside a transaction. (`page_reply` / `page_serve` are the worker's own plumbing and are
+    // ledgered in `tests/rev_coverage.rs`.)
+    ("page_get", "pure"),
+    ("page_states", "pure"),
     ("verbs", "pure"),
     ("watch_list", "pure"),
     ("which", "pure"),
@@ -423,6 +438,14 @@ const REV: &[(&str, &str)] = &[
 /// The reversibility class of `verb` — `"inverse"`, `"pure"`, or `"irreversible"` (the default for
 /// anything `REV` does not name, including every unknown verb).
 pub fn rev(verb: &str) -> &'static str {
+    // The page namespace is classified by CONSTRUCTION rather than by table: `page.rs` exposes
+    // projections of the rendered DOM and nothing that writes to it (a page write would be a second,
+    // unjournaled path into the browser that `txn_abort` could not unwind — see that module's docs).
+    // Computing the class keeps `page::STATES` the single home of the catalogue; a table here would
+    // be a mirror that silently defaults a newly added projection to `irreversible`.
+    if crate::page::is_page_request(verb) {
+        return "pure";
+    }
     REV.iter()
         .find(|(id, _)| *id == verb)
         .map(|(_, class)| *class)
@@ -479,6 +502,13 @@ fn action_nonce() -> u64 {
 }
 
 fn run_command(verb: &str, args: &Value) -> Value {
+    // A page projection is not a host command and not a forwarded browser action: it is a QUESTION
+    // for the live DOM, answered by the browser-attached process (page.rs). Routed here so the
+    // bridge `get` frame, the bridge `call` frame and the `page_get` host command all land on the
+    // same handler with the same reply shape.
+    if crate::page::is_page_request(verb) {
+        return crate::page::request(verb, args);
+    }
     if let Some(action) = verb.strip_prefix("browser.") {
         let mut data = serde_json::Map::new();
         data.insert("a".into(), json!(action));
@@ -629,17 +659,29 @@ pub fn txn_command(cmd: &str, args: &Value) -> Value {
 /// crate-private `REV` table in JavaScript — a mirror drifts the moment a verb is added here, and a
 /// drifted mirror tells the author a chain is revertible when the host will refuse it.
 pub fn surface() -> Value {
+    // The page projections are advertised BOTH ways on purpose: as `state` (a `get` frame, which is
+    // how a script names one) and as verbs (a `call` frame, the only frame that carries args — a
+    // selector for `page.extract`, a `timeout_ms`, a url filter). Same handler either way.
+    let page: Vec<&str> = crate::page::STATES
+        .iter()
+        .map(|(id, _)| *id)
+        .chain([crate::page::EXTRACT_VERB, crate::page::ASSERT_VERB])
+        .collect();
     let verbs: Vec<Value> = SURFACE_VERBS
         .iter()
-        .map(|c| json!({ "id": *c, "label": *c, "rev": rev(c) }))
+        .copied()
+        .chain(page)
+        .map(|c| json!({ "id": c, "label": c, "rev": rev(c) }))
         .collect();
+    let mut state = vec![
+        json!({ "id": "hostinfo", "label": "Host info" }),
+        json!({ "id": "scheme", "label": "Color scheme" }),
+    ];
+    state.extend(crate::page::states());
     json!({
         "app": "zwire",
         "verbs": verbs,
-        "state": [
-            json!({ "id": "hostinfo", "label": "Host info" }),
-            json!({ "id": "scheme", "label": "Color scheme" }),
-        ],
+        "state": state,
         "events": [],
     })
 }

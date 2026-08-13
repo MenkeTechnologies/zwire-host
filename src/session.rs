@@ -117,6 +117,33 @@ impl Session {
         req["app"].as_str().unwrap_or("zwire").to_string()
     }
 
+    /// Run a page request on its own thread and reply there.
+    ///
+    /// Every page read waits on the browser, so the only safe place to wait is off the connection's
+    /// reader thread. Both entrypoints that can carry one (`page_get`, and a `call` naming a page
+    /// verb) come through here so neither can be made blocking again by accident.
+    fn spawn_page_reply(&self, out: &Out, msg: &Value) {
+        let out = out.clone();
+        let msg = msg.clone();
+        std::thread::spawn(move || {
+            let reply = match msg["cmd"].as_str() {
+                Some("call") => {
+                    let verb = msg["verb"].as_str().unwrap_or("");
+                    let args = msg.get("args").cloned().unwrap_or_else(|| json!({}));
+                    // A page verb is `pure`, so the transaction gate never refuses it; routing it
+                    // through `call_verb` anyway keeps ONE path for every bus call.
+                    match crate::zbus::call_verb(verb, args, msg["txn"].as_u64()) {
+                        Ok(v) => json!({ "ok": true, "result": v }),
+                        Err(e) => json!({ "ok": false, "err": e }),
+                    }
+                }
+                _ => crate::page::command("page_get", &msg)
+                    .unwrap_or_else(|| json!({"ok": false, "err": "unknown page command"})),
+            };
+            respond(&out, &msg, reply);
+        });
+    }
+
     /// Handle one request. `out` is the connection's write sink; background
     /// capabilities (sysinfo, PTY output) keep writing to it after this returns.
     pub fn handle(&mut self, out: &Out, msg: &Value) {
@@ -266,6 +293,14 @@ impl Session {
             journal as a stryke script's, so `txn_abort` unwinds both. */
             "call" => {
                 let verb = msg["verb"].as_str().unwrap_or("");
+                // A page verb BLOCKS until the browser answers — see the note on the page arm
+                // below. The HUD sends its transacted steps down the persistent port, which is the
+                // stdio reader thread of the very process the answer has to come back through, so
+                // running one inline here deadlocks a postcondition against its own reply.
+                if crate::page::is_page_request(verb) {
+                    self.spawn_page_reply(out, msg);
+                    return;
+                }
                 let args = msg
                     .get("args")
                     .cloned()
@@ -292,6 +327,32 @@ impl Session {
                         out,
                         msg,
                         json!({"ok": false, "err": format!("unknown suite command: {cmd}")}),
+                    ),
+                }
+            }
+
+            /* ---- the rendered page as typed state (page.rs) ----
+            `page_get` is the pull the bus `get`/`call` frames land on; `page_reply` is the HUD
+            service worker delivering an answer back to the waiting query, and `page_serve` is it
+            claiming this process as the browser-attached one. The last two only ever arrive on the
+            worker's own native port.
+
+            `page_get` answers on its OWN THREAD. In the attached process the query's answer comes
+            back as a `page_reply` on the same stdio connection the query arrived on, and
+            `transport::stdio` reads that connection in a single loop — so blocking here would block
+            the only reader that can deliver what we are blocking for. Correlation is already by
+            `id` (`proto::respond` copies it), so replying out of order costs nothing. */
+            "page_get" => self.spawn_page_reply(out, msg),
+            "page_states" | "page_reply" | "page_serve" => {
+                match crate::page::command(cmd, msg) {
+                    Some(v) => respond(out, msg, v),
+                    // Unreachable: this arm and `page::command` list the same commands, and
+                    // `tests/page_state.rs` pins that. Answering rather than falling silent keeps a
+                    // future command from hanging a caller that is waiting on a reply.
+                    None => respond(
+                        out,
+                        msg,
+                        json!({"ok": false, "err": format!("unknown page command: {cmd}")}),
                     ),
                 }
             }

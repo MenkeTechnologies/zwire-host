@@ -137,6 +137,17 @@ const DELIBERATELY_IRREVERSIBLE: &[&str] = &[
     "sysinfo_start",
     "sysinfo_stop",
     "watch_stop",
+    /* ---- host: the page endpoint's own plumbing (page.rs) --------------------------------------
+    Neither is a page READ — the reads (`page.*` projections, `page_get`, `page_states`) are
+    classified `pure`, which is what lets a postcondition be tested inside a transaction.
+
+    `page_reply` is the HUD service worker handing over the answer to a query that is already
+    blocking a caller on a condvar. By the time anything could be unwound the caller has consumed
+    it and returned; "put the answer back" is not a thing that exists. `page_serve` binds a second
+    local socket, chmods it and spawns its accept loop — an OS-visible artifact plus a running
+    thread, the same reason every other spawning verb is in this ledger. */
+    "page_reply",
+    "page_serve",
     /* ---- host: sends something that cannot be recalled ----------------------------------------
     `pub` fans a message to every local subscriber and forwards it to every peer host; `sub` /
     `unsub` mutate that subscriber set (and `sub` immediately pushes a snapshot frame);

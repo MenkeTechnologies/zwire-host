@@ -55,8 +55,11 @@ const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 /// process runs out of memory.
 const MAX_REPLY_BYTES: u64 = 8 * 1024 * 1024;
 
-/// This app's own bus name — excluded from [`list`] so "the other apps" means the other apps.
-const SELF_APP: &str = "zwire";
+/// This app's own bus names — excluded from [`list`] so "the other apps" means the other apps.
+/// `zwire-page` is the browser's own second endpoint ([`crate::page`]), served by whichever host
+/// process the browser is attached to: listing it would report zwire twice under a name no script
+/// should dial directly.
+const SELF_APPS: &[&str] = &["zwire", crate::page::PAGE_APP];
 
 /* ---------------------------------------------------------------- transport */
 
@@ -270,7 +273,7 @@ pub fn list() -> Value {
     let probed = cands.len();
     let apps: Vec<String> = cands
         .into_iter()
-        .filter(|a| a != SELF_APP)
+        .filter(|a| !SELF_APPS.contains(&a.as_str()))
         .filter(|a| platform::alive(a))
         .collect();
     json!({ "ok": true, "apps": apps, "probed": probed })
