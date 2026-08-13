@@ -55,11 +55,7 @@ fn str_of(p: &Path) -> String {
 /// host's own error text when the op failed.
 fn ok(cmd: &str, args: Value) -> Value {
     let reply = fsops::handle(cmd, &args);
-    assert_eq!(
-        reply["ok"], json!(true),
-        "{cmd} failed: {}",
-        reply["err"]
-    );
+    assert_eq!(reply["ok"], json!(true), "{cmd} failed: {}", reply["err"]);
     reply["data"].clone()
 }
 
@@ -316,7 +312,10 @@ fn grep_case_insensitivity_is_opt_in() {
     let t = Tmp::new("grepci");
     t.write("f.txt", "Mixed Case\n");
 
-    let strict = ok("fs_grep", json!({ "root": t.path(), "needle": "mixed case" }));
+    let strict = ok(
+        "fs_grep",
+        json!({ "root": t.path(), "needle": "mixed case" }),
+    );
     assert_eq!(strict.as_array().unwrap().len(), 0);
 
     let loose = ok(
@@ -409,7 +408,10 @@ fn get_info_reports_symlink_target_and_retarget_rewrites_it() {
 fn chmod_round_trips_through_get_info() {
     let t = Tmp::new("chmod");
     let f = t.write("m.txt", "m");
-    ok("fs_chmod", json!({ "path": f.clone(), "mode_octal": "640" }));
+    ok(
+        "fs_chmod",
+        json!({ "path": f.clone(), "mode_octal": "640" }),
+    );
 
     let info = ok("fs_get_info", json!({ "path": f.clone() }));
     assert_eq!(info["modeOctal"], json!("0640"));
