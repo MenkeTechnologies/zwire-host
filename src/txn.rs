@@ -63,6 +63,21 @@ pub fn any_open() -> bool {
         .is_empty()
 }
 
+/// Every transaction currently open, ascending. An un-tagged step belongs to all of them — see
+/// [`record`] — and [`crate::page::WITNESS_VERB`] needs the same list to file a premise against every
+/// transaction the caller is inside.
+pub fn open_ids() -> Vec<u64> {
+    let mut ids: Vec<u64> = journal()
+        .open
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .keys()
+        .copied()
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
 /// Is this specific transaction open?
 pub fn is_open(txn: u64) -> bool {
     journal()

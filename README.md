@@ -298,15 +298,18 @@ typed state on the same bus, with the same frames it uses for any other app.
 
 | Message | Reply / effect |
 |---|---|
-| `{"cmd":"page_states"}` | `{ok,states:[…],verbs:[…],ops:[…],serving}` — the projection catalogue, the two verbs, and the assertion vocabulary. |
+| `{"cmd":"page_states"}` | `{ok,states:[…],verbs:[…],ops:[…],serving}` — the projection catalogue, the verbs, and the assertion vocabulary. |
 | `{"cmd":"page_get","state":"page.links","args":{…}}` | `{ok,state,value}` — one typed projection of the live DOM. `args` accepts `tabId` / `urls` (a regex naming a background tab) / `timeout_ms`. |
 | `{"cmd":"page_get","state":"page.assert","args":{"state":…,"op":…,"value":…}}` | project **and test** in one call: `{ok:true,pass:true}`, or `{ok:false,pass:false,err}` when the page does not satisfy it. |
+| `{"cmd":"page_get","state":"page.witness","args":{"state":…}}` | declare a **premise** of the open transaction — see below. `{ok,witness,digest}`, or `{ok:false}` when there is no transaction to gate. |
+| `{"cmd":"page_get","state":"page.batch","args":{"reads":[{"state","args"},…]}}` | several projections in **one injection**: one `{ok,value}` / `{ok:false,err}` per read, in order, from a single DOM turn. |
 | `{"cmd":"page_serve"}` | the HUD worker claiming its host process as the browser's page endpoint (binds `zgui/zwire-page.sock`). |
 | `{"cmd":"page_reply","qid":N,…}` | the HUD worker delivering one answer. Never sent by anything else. |
 
 Projections: `page.url` · `page.title` · `page.text` · `page.links` · `page.headings` ·
 `page.tables` · `page.forms` · `page.meta` · `page.selection`, plus `page.extract` for
-anything the fixed set does not name. Assertion ops: `contains` · `not_contains` ·
+anything the fixed set does not name; `page.assert` tests one, `page.witness` pins one as a
+premise, and `page.batch` reads several at once. Assertion ops: `contains` · `not_contains` ·
 `equals` · `empty` · `nonempty` · `count_at_least` · `count_at_most`.
 
 Two things are deliberately absent. There are **no page writes** — mutation already
@@ -315,7 +318,41 @@ unjournaled write path would be a way to change the browser that `txn_abort` cou
 unwind. And `page.forms` publishes a form's **shape** — action, method, field names and
 types — and never a field's value, because autofilled credentials are on the page too.
 Every `page.*` verb is therefore `pure`: safe to read inside an open transaction, which
-is what lets a postcondition decide whether that transaction commits.
+is what lets a postcondition decide whether that transaction commits — and a premise decide whether
+it may still stand.
+
+**Premises: the facts a chain was decided on, re-checked at commit** (`src/witness.rs`)
+
+A postcondition tests the page the chain *produced*. It cannot see the other window — the one
+between reading the page and acting on it, during which the user, a timer, a server push or a
+second agent can change what the chain was reasoning about:
+
+```jsonc
+{"t":"begin","id":1,"txn":9001}
+{"t":"call","id":2,"verb":"page.witness","args":{"state":"page.tables"},"txn":9001}
+{"t":"call","id":3,"verb":"page.witness","args":{"state":"page.links","op":"count_at_least","value":"1"},"txn":9001}
+{"t":"call","id":4,"verb":"browser.newTab","args":{},"txn":9001}
+{"t":"commit","id":5,"txn":9001}
+// ← {"ok":false,"conflict":true,"aborted":true,"steps":1,
+//    "violations":[{"state":"page.tables","reason":"changed","err":"page.tables changed: 6f… → 91…"}]}
+```
+
+`page.witness` declares a projection as a **premise**: with an `op` it must still satisfy that
+predicate at commit, without one it must be byte-identical. `txn_commit` re-reads the whole premise
+set and, if any of them stopped holding, turns the commit into an **abort** — the journaled inverses
+replay and the browser ends where it started. A premise that cannot be re-read at all (browser
+closed, tab gone, origin denied) refuses the commit too: "nobody could confirm it" is not "it held".
+
+Premises are **declared, not inferred**. A chain's own steps navigate, so an implicitly captured read
+set would conflict with itself on nearly every real chain; an explicit premise states something the
+author means. A transaction with no premises commits exactly as before — one map removal, no IPC.
+
+Validation is **one round trip**. Re-reading premises one at a time would let the page move *between*
+the answers, so a set could pass in a state the page was never simultaneously in. The whole set goes
+out as a single `page.batch`, which the HUD worker answers with one `chrome.scripting.executeScript`
+per target tab — a synchronous body, so every projection in it comes from one DOM turn. Reads
+addressing different tabs are grouped and injected concurrently; two tabs are two renderer processes,
+so per-tab atomicity is what is claimed and cross-tab simultaneity is not.
 
 Mechanically a query is a **rendezvous**, because the DOM is a process away. Only one
 host process is attached to the browser (the long-lived `connectNative` one), and it is

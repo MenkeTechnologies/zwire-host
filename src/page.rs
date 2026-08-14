@@ -127,10 +127,41 @@ pub const EXTRACT_VERB: &str = "page.extract";
 /// distinguishable from "the page could not be read at all".
 pub const ASSERT_VERB: &str = "page.assert";
 
+/// The PREMISE verb: declare that a projection of the rendered page is a fact the rest of the
+/// transaction depends on, so `txn_commit` refuses to let the chain stand if it stopped being true.
+///
+/// The mirror image of [`ASSERT_VERB`]. An assertion looks FORWARD — it tests the page the chain
+/// itself produced. A premise looks BACK — it pins the page the chain *reasoned about*, which
+/// anything else with a handle on the browser (the user, a timer, a server push, a second agent) can
+/// change while the chain is mid-flight. See [`crate::witness`] for what a premise is checked
+/// against and why the check is one round trip.
+pub const WITNESS_VERB: &str = "page.witness";
+
+/// Project SEVERAL views in ONE injection: `{"reads":[{"state","args"},…]}` → one result per read,
+/// in order, each `{ok:true,value}` or `{ok:false,err}`.
+///
+/// This exists because a premise set has to be re-read ATOMICALLY. Asking N times lets the page move
+/// between the answers, so a set could validate in a state it was never simultaneously in. One batch
+/// is one `chrome.scripting.executeScript` per target tab, and a synchronous function body observes
+/// a single DOM turn — so the whole read set comes from one moment. It is also, incidentally, the
+/// cheapest way for any caller to pull several projections: one publish, one wait, one reply.
+pub const BATCH_VERB: &str = "page.batch";
+
 /// Is `id` a page state or one of the page verbs — i.e. should [`request`] handle it?
 pub fn is_page_request(id: &str) -> bool {
-    id == EXTRACT_VERB || id == ASSERT_VERB || STATES.iter().any(|(s, _)| *s == id)
+    id == EXTRACT_VERB
+        || id == ASSERT_VERB
+        || id == WITNESS_VERB
+        || id == BATCH_VERB
+        || STATES.iter().any(|(s, _)| *s == id)
 }
+
+/// The page VERBS, in the order `page_states` and the automation surface advertise them.
+pub const VERBS: &[&str] = &[EXTRACT_VERB, ASSERT_VERB, WITNESS_VERB, BATCH_VERB];
+
+/// Ceiling on one batch. Bounds the work a single query can ask a renderer to do synchronously; the
+/// browser half enforces the identical cap (`zpage-core.js` `MAX_BATCH`).
+pub const MAX_BATCH: usize = 32;
 
 /// The catalogue in `surface()` shape.
 pub fn states() -> Vec<Value> {
@@ -453,6 +484,22 @@ pub fn request(id: &str, args: &Value) -> Value {
             return json!({ "ok": false, "assert": true, "err": e });
         }
     }
+    // A premise is filed against the TRANSACTION, and the transaction journal lives in the process
+    // the caller reached — never necessarily the one the browser is attached to. So `page.witness`
+    // is handled HERE and only its underlying read is allowed to travel; forwarding the whole verb
+    // would ledger the premise in a process whose `txn_commit` nobody will ever call.
+    if id == WITNESS_VERB {
+        return witness_here(args);
+    }
+    // Bounded here as well as in the browser: an oversized batch must be refused on the caller's
+    // process rather than after two socket hops, and the host half of the cap is what
+    // `crate::witness::plan` can rely on when it sizes a premise set.
+    if id == BATCH_VERB {
+        let n = args["reads"].as_array().map_or(0, Vec::len);
+        if n > MAX_BATCH {
+            return json!({ "ok": false, "err": format!("too many reads in one batch: {n} > {MAX_BATCH}") });
+        }
+    }
     let ms = args
         .get("timeout_ms")
         .and_then(Value::as_u64)
@@ -492,6 +539,140 @@ fn check_assert(args: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/* ---------------------------------------------------------------- premises */
+
+/// Declare one premise of the open transaction: project it now, prove it, and ledger it for
+/// [`crate::witness::revalidate`] to re-check at commit.
+///
+/// Three refusals, all of them before anything is ledgered:
+///
+/// * **No open transaction.** A premise with nothing to gate is an authoring bug — the chain would
+///   run believing it was protected and commit unconditionally. Failing loudly is the only honest
+///   answer; a silent no-op here is a guarantee that quietly does not exist.
+/// * **A projection or predicate this host does not know.** Same reason [`check_assert`] runs before
+///   any IPC: a typo must not come back looking like a page that changed.
+/// * **A predicate that is ALREADY false.** The premise never held, so the chain should fail at the
+///   line that stated it, not at a commit whose conflict report would blame concurrency for an
+///   assumption that was wrong from the start.
+fn witness_here(args: &Value) -> Value {
+    let asked = args.get("txn").and_then(Value::as_u64);
+    let txns: Vec<u64> = match asked {
+        Some(t) if crate::txn::is_open(t) => vec![t],
+        Some(t) => {
+            return json!({ "ok": false, "witness": true, "err": format!("transaction {t} is not open") })
+        }
+        // Un-tagged, exactly like an un-tagged `call`: the premise belongs to every transaction the
+        // caller is inside, because any of them may be the one that commits on this reading.
+        None => crate::txn::open_ids(),
+    };
+    if txns.is_empty() {
+        return json!({
+            "ok": false,
+            "witness": true,
+            "err": "page.witness needs an open transaction — a premise with nothing to gate would be silently ignored",
+        });
+    }
+    if let Err(e) = check_assert(args) {
+        return json!({ "ok": false, "witness": true, "err": e });
+    }
+    let state = args["state"].as_str().unwrap_or("page.text").to_string();
+    // Absent `op` is a CONTENT premise; `check_assert` defaults a missing op to `contains` for an
+    // assertion, which would be the wrong default here — a premise nobody wrote a predicate for
+    // means "unchanged", not "contains the empty string".
+    let op = args.get("op").and_then(Value::as_str).map(str::to_string);
+    let expected = args["value"].as_str().unwrap_or("").to_string();
+    let ignore_case = args["ignore_case"] == json!(true);
+
+    let mut read = crate::witness::read_args(args);
+    if let (Some(o), Some(ms)) = (read.as_object_mut(), args.get("timeout_ms")) {
+        // The timeout rides the read but is stripped from the LEDGERED args, so the premise's stored
+        // read is byte-identical to the one the batch will replay.
+        o.insert("timeout_ms".into(), ms.clone());
+    }
+    let reply = request(&state, &read);
+    if reply["ok"] != json!(true) {
+        return json!({
+            "ok": false,
+            "witness": true,
+            "err": reply["err"].as_str().unwrap_or("the page could not be read").to_string(),
+        });
+    }
+    let value = reply.get("value").cloned().unwrap_or(Value::Null);
+    if let Some(op) = &op {
+        match evaluate(op, &value, &expected, ignore_case) {
+            Ok(true) => {}
+            Ok(false) => {
+                return json!({
+                    "ok": false,
+                    "witness": true,
+                    "pass": false,
+                    "state": state,
+                    "op": op,
+                    "err": format!("premise does not hold: {state} {op} {expected:?}"),
+                })
+            }
+            Err(e) => return json!({ "ok": false, "witness": true, "err": e }),
+        }
+    }
+    let digest = crate::witness::digest(&value);
+    let id = crate::witness::record(
+        &txns,
+        crate::witness::Premise {
+            id: 0,
+            state: state.clone(),
+            args: crate::witness::read_args(args),
+            digest: digest.clone(),
+            op: op.clone(),
+            expected,
+            ignore_case,
+        },
+    );
+    json!({
+        "ok": true,
+        "witness": id,
+        "state": state,
+        "op": op,
+        "digest": digest,
+        "txns": txns,
+    })
+}
+
+/// Re-read a set of projections in one batch. One entry per read, in order.
+///
+/// A batch that fails as a WHOLE (no browser, a refused dial) becomes one `Err` per read rather than
+/// a single error, so [`crate::witness::check`] never has to distinguish "the batch broke" from "this
+/// read broke" — both mean the same thing to a premise: nobody could confirm it.
+pub fn batch(reads: &[Value], timeout_ms: Option<u64>) -> Vec<Result<Value, String>> {
+    let mut args = json!({ "reads": reads });
+    if let (Some(o), Some(ms)) = (args.as_object_mut(), timeout_ms) {
+        o.insert("timeout_ms".into(), json!(ms));
+    }
+    let reply = request(BATCH_VERB, &args);
+    let spread = |e: String| -> Vec<Result<Value, String>> {
+        reads.iter().map(|_| Err(e.clone())).collect()
+    };
+    if reply["ok"] != json!(true) {
+        return spread(
+            reply["err"]
+                .as_str()
+                .unwrap_or("the page batch failed")
+                .to_string(),
+        );
+    }
+    let Some(list) = reply.get("value").and_then(Value::as_array) else {
+        return spread("the browser did not answer with a batch".into());
+    };
+    reads
+        .iter()
+        .enumerate()
+        .map(|(i, _)| match list.get(i) {
+            Some(e) if e["ok"] == json!(true) => Ok(e.get("value").cloned().unwrap_or(Value::Null)),
+            Some(e) => Err(e["err"].as_str().unwrap_or("this read failed").to_string()),
+            None => Err("no answer for this read".into()),
+        })
+        .collect()
+}
+
 /// Project + test, in the process the browser is attached to.
 ///
 /// The projection is fetched with the SAME [`ask`] every read uses, so an assertion can never be
@@ -529,7 +710,7 @@ pub fn command(cmd: &str, msg: &Value) -> Option<Value> {
         "page_states" => Some(json!({
             "ok": true,
             "states": states(),
-            "verbs": [EXTRACT_VERB, ASSERT_VERB],
+            "verbs": VERBS,
             "ops": ASSERT_OPS.iter().map(|(id, doc)| json!({ "id": *id, "doc": *doc })).collect::<Vec<_>>(),
             "serving": serving().load(Ordering::Relaxed),
         })),

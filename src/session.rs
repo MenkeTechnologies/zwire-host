@@ -280,6 +280,23 @@ impl Session {
             Reachable both as these plain host commands and as the `begin`/`commit`/`abort`
             bus frames, which route here so both callers share one journal. */
             "txn_begin" | "txn_commit" | "txn_abort" => {
+                // A commit with PREMISES re-reads the browser before it decides, and in the attached
+                // process that answer arrives as a `page_reply` on the very connection this handler
+                // is running on — so it has to wait off the reader thread for exactly the reason
+                // `spawn_page_reply` documents. A commit with no premises does no IPC at all and
+                // stays inline, which keeps the pre-premise path byte-for-byte unchanged.
+                if cmd == "txn_commit"
+                    && msg["txn"]
+                        .as_u64()
+                        .is_some_and(|t| crate::witness::count(t) > 0)
+                {
+                    let (out, msg) = (out.clone(), msg.clone());
+                    std::thread::spawn(move || {
+                        let r = crate::zbus::txn_command("txn_commit", &msg);
+                        respond(&out, &msg, r);
+                    });
+                    return;
+                }
                 respond(out, msg, crate::zbus::txn_command(cmd, msg))
             }
 

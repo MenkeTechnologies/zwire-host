@@ -63,6 +63,11 @@ pub mod transport;
 /// `App::txn { … }`, driven by the `begin` / `commit` / `abort` frames in [`zbus`].
 pub mod txn;
 pub mod watch;
+/// PREMISES for a browser transaction: the facts a chain was decided on, re-read in one atomic batch
+/// at `txn_commit` and, if any of them stopped holding, turned into an abort through [`txn`]'s
+/// journal. The gate [`page`]'s postconditions cannot be — an assertion tests the page the chain
+/// produced, a premise pins the page the chain reasoned about.
+pub mod witness;
 /// GUI Automation Bus endpoint — `App::open("zwire")` (native zgui-bridge protocol, no proprietary dep).
 ///
 /// Cross-platform singleton `bus-daemon`: a Unix-domain socket (temp-bind + atomic `rename` + `flock`)

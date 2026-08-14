@@ -619,35 +619,94 @@ pub fn call_verb(verb: &str, mut args: Value, txn: Option<u64>) -> Result<Value,
 pub fn txn_command(cmd: &str, args: &Value) -> Value {
     match cmd {
         "txn_begin" => crate::txn::begin(args),
-        "txn_commit" => crate::txn::commit(args),
-        "txn_abort" => {
-            let txn = match args.get("txn").and_then(Value::as_u64) {
-                Some(t) => t,
-                None => return json!({ "ok": false, "err": "no txn" }),
-            };
-            // Removed from the journal before anything is compensated, so a concurrent second
-            // abort of the same transaction unwinds nothing rather than unwinding twice.
-            let entries = crate::txn::take_reversed(txn);
-            let steps: Vec<Value> = entries
-                .iter()
-                .map(|e| json!({ "seq": e.seq, "verb": e.verb, "args": e.args }))
-                .collect();
-            let undo = if steps.is_empty() {
-                Value::Null
-            } else {
-                run_command("browser.undo", &json!({ "txn": txn, "steps": steps }))
-            };
-            crate::hooks::fire("txn-aborted", json!({ "txn": txn, "steps": steps.len() }));
-            json!({
-                "ok": true,
-                "txn": txn,
-                "steps": steps.len(),
-                "aborted": true,
-                "undo": undo,
-            })
-        }
+        "txn_commit" => commit_gated(args),
+        "txn_abort" => match args.get("txn").and_then(Value::as_u64) {
+            Some(t) => abort(t),
+            None => json!({ "ok": false, "err": "no txn" }),
+        },
         _ => json!({ "ok": false, "err": "unknown_cmd", "cmd": cmd }),
     }
+}
+
+/// Unwind one transaction: drain its journal in reverse `seq` order, forward a single
+/// `browser.undo` carrying the reversed step list, and drop its premises.
+fn abort(txn: u64) -> Value {
+    // Removed from the journal before anything is compensated, so a concurrent second abort of the
+    // same transaction unwinds nothing rather than unwinding twice.
+    let entries = crate::txn::take_reversed(txn);
+    // The premises die with the transaction. Leaving them would let a LATER transaction that reuses
+    // the id inherit facts about a page nobody asked it about.
+    let premises = crate::witness::take(txn).len();
+    let steps: Vec<Value> = entries
+        .iter()
+        .map(|e| json!({ "seq": e.seq, "verb": e.verb, "args": e.args }))
+        .collect();
+    let undo = if steps.is_empty() {
+        Value::Null
+    } else {
+        run_command("browser.undo", &json!({ "txn": txn, "steps": steps }))
+    };
+    crate::hooks::fire("txn-aborted", json!({ "txn": txn, "steps": steps.len() }));
+    json!({
+        "ok": true,
+        "txn": txn,
+        "steps": steps.len(),
+        "premises": premises,
+        "aborted": true,
+        "undo": undo,
+    })
+}
+
+/// Commit, but only if every PREMISE the chain declared still holds.
+///
+/// A transaction with no premises takes exactly the path it took before premises existed — one
+/// `HashMap::remove`, no IPC, no cost. That matters: the gate must be something a chain opts into,
+/// not a tax on every commit.
+///
+/// With premises, the whole set is re-read in ONE batch (see [`crate::witness`]) and compared. Any
+/// premise that changed, stopped satisfying its predicate, or could not be re-read at all turns the
+/// commit into an ABORT — the same abort a failed step would have caused, through the same journal,
+/// so the browser ends where it started and the caller needs no new failure plumbing. The reply is
+/// `ok:false` with `conflict:true` and the violations named, which every chain executor in the HUD
+/// already treats as a failed step.
+fn commit_gated(args: &Value) -> Value {
+    let Some(txn) = args.get("txn").and_then(Value::as_u64) else {
+        return json!({ "ok": false, "err": "no txn" });
+    };
+    let premises = crate::witness::take(txn);
+    if premises.is_empty() {
+        return crate::txn::commit(args);
+    }
+    let violations =
+        crate::witness::revalidate(&premises, args.get("timeout_ms").and_then(Value::as_u64));
+    if violations.is_empty() {
+        let mut r = crate::txn::commit(args);
+        if let Some(o) = r.as_object_mut() {
+            o.insert("premises".into(), json!(premises.len()));
+            o.insert("validated".into(), json!(true));
+        }
+        return r;
+    }
+    let mut r = abort(txn);
+    if let Some(o) = r.as_object_mut() {
+        // `ok:false` even though the unwind itself succeeded: the caller asked for a commit and did
+        // not get one. Reporting `ok:true` because the abort worked would let a chain read its own
+        // rollback as success, which is the one outcome this gate exists to prevent.
+        o.insert("ok".into(), json!(false));
+        o.insert("committed".into(), json!(false));
+        o.insert("conflict".into(), json!(true));
+        o.insert("premises".into(), json!(premises.len()));
+        o.insert(
+            "err".into(),
+            json!(format!(
+                "commit refused: {} of {} premise(s) no longer hold",
+                violations.len(),
+                premises.len()
+            )),
+        );
+        o.insert("violations".into(), json!(violations));
+    }
+    r
 }
 
 /// The automation surface — every host command (for discovery) plus a couple of state queries.
@@ -665,7 +724,7 @@ pub fn surface() -> Value {
     let page: Vec<&str> = crate::page::STATES
         .iter()
         .map(|(id, _)| *id)
-        .chain([crate::page::EXTRACT_VERB, crate::page::ASSERT_VERB])
+        .chain(crate::page::VERBS.iter().copied())
         .collect();
     let verbs: Vec<Value> = SURFACE_VERBS
         .iter()
