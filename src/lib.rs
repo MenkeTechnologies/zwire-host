@@ -58,6 +58,11 @@ pub mod sysmon;
 #[cfg(feature = "tauri")]
 pub mod tauri_theme;
 pub mod theme_watch;
+/// REAL tmux — the `tmux_*` commands, backed by the `ztmux-core` wire client. Unix only, and
+/// only when the `ztmux` feature is on: the crate speaks the tmux client protocol over a Unix
+/// domain socket, which has no Windows counterpart.
+#[cfg(all(unix, feature = "ztmux"))]
+pub mod tmuxops;
 pub mod transport;
 /// Transactional compensation for the automation bus: the journal + reversibility classes behind
 /// `App::txn { … }`, driven by the `begin` / `commit` / `abort` frames in [`zbus`].

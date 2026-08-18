@@ -152,6 +152,41 @@ const SURFACE_VERBS: &[&str] = &[
     "sysinfo_once",
     "sysinfo_start",
     "sysinfo_stop",
+    // TMUX — the REAL multiplexer over the `ztmux-core` wire client (tmuxops.rs). Advertised
+    // unconditionally: the surface is a manifest of what the COMMAND VOCABULARY is, and a verb
+    // that vanishes on a Windows build (or one with `ztmux` off) would have a script guessing
+    // whether it typo'd or whether the host is a different build. The command itself answers
+    // that distinction — "tmux support not built into this host".
+    "tmux_broadcast_list",
+    "tmux_buffer",
+    "tmux_buffers",
+    "tmux_capture",
+    "tmux_command",
+    "tmux_delete_buffer",
+    "tmux_export_state",
+    "tmux_focus",
+    "tmux_import_state",
+    "tmux_keys",
+    "tmux_options",
+    "tmux_panes",
+    "tmux_paste_buffer",
+    "tmux_run",
+    "tmux_search",
+    "tmux_send",
+    "tmux_sessions",
+    "tmux_set_buffer",
+    "tmux_set_key",
+    "tmux_set_option",
+    "tmux_snap_delete",
+    "tmux_snap_detail",
+    "tmux_snap_list",
+    "tmux_snap_rename",
+    "tmux_snap_restore",
+    "tmux_snap_save",
+    "tmux_status",
+    "tmux_sync",
+    "tmux_tree",
+    "tmux_unbind_key",
     "unsub",
     "verbs",
     "watch_list",
@@ -367,6 +402,27 @@ const REV: &[(&str, &str)] = &[
     // ledgered in `tests/rev_coverage.rs`.)
     ("page_get", "pure"),
     ("page_states", "pure"),
+    // Tmux READS. Each one is a `list-*` / `show-*` / `capture-pane -p` over the client wire
+    // protocol: the server answers from memory and records nothing, and the reply never leaves
+    // this process except as the caller's return value. `tmux_status` only probes the socket.
+    // `tmux_snap_list` / `tmux_snap_detail` read the snapshot directory WITHOUT creating it
+    // (`tmuxops::snapshot_dir`), so a listing on a machine that never saved leaves no trace.
+    // The writes — send-keys, focus, sync, buffers, key tables, option and snapshot writes — are
+    // ledgered as irreversible in `tests/rev_coverage.rs`.
+    ("tmux_broadcast_list", "pure"),
+    ("tmux_buffer", "pure"),
+    ("tmux_buffers", "pure"),
+    ("tmux_capture", "pure"),
+    ("tmux_export_state", "pure"),
+    ("tmux_keys", "pure"),
+    ("tmux_options", "pure"),
+    ("tmux_panes", "pure"),
+    ("tmux_search", "pure"),
+    ("tmux_sessions", "pure"),
+    ("tmux_snap_detail", "pure"),
+    ("tmux_snap_list", "pure"),
+    ("tmux_status", "pure"),
+    ("tmux_tree", "pure"),
     ("verbs", "pure"),
     ("watch_list", "pure"),
     ("which", "pure"),

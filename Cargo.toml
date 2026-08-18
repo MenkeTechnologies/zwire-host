@@ -1,8 +1,8 @@
 [package]
 name = "zwire-host"
-version = "0.3.15"
+version = "0.3.16"
 edition = "2021"
-description = "Universal local host: system stats, filesystem, exec, PTY & kv store, reachable from Chrome native-messaging or a Unix-socket JSON daemon"
+description = "Universal local host: system stats, filesystem, exec, PTY, real-tmux control & kv store, reachable from Chrome native-messaging or a Unix-socket JSON daemon"
 authors = ["MenkeTechnologies <linux.dev25@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/zwire-host"
@@ -33,11 +33,17 @@ panic = "abort"
 # light capabilities — filesystem crawl, exec, kv, bus, jobs, watch, via
 # `zwire_host::api` — can set `default-features = false` to drop the heavy
 # `sysinfo` and `portable-pty` dependencies entirely.
-default = ["sysinfo-caps", "pty"]
+default = ["sysinfo-caps", "pty", "ztmux"]
 # Live system stats (`sysinfo_*`), `ps`/`kill`, and sysinfo-derived host facts.
 sysinfo-caps = ["dep:sysinfo"]
 # Multiplexed PTY terminals (`pty_*`).
 pty = ["dep:portable-pty"]
+# REAL tmux (`tmux_*`) through the `ztmux-core` wire client — the live session
+# tree, send-keys, capture, buffers, key tables and native session snapshots,
+# reachable from a browser palette row. Unix only: the crate talks the tmux
+# client protocol over a Unix domain socket, so the dependency is declared under
+# `cfg(unix)` and the feature is inert on Windows.
+ztmux = ["dep:ztmux-core"]
 # A ready-made Tauri v2 plugin (`zwire_host::tauri_theme::init()`) giving an app
 # fleet-wide theme sync: theme_get/theme_set commands + a `theme-changed` event.
 # Only pulls `tauri` when an app opts in; the daemon build never does.
@@ -72,6 +78,9 @@ tauri = { version = "2", optional = true, default-features = false }
 [target.'cfg(unix)'.dependencies]
 # Extended attributes for fs_xattrs — Unix-only.
 xattr = "1"
+# REAL tmux (`tmux_*`, feature `ztmux`): the tmux client wire protocol over a Unix
+# domain socket. No Windows counterpart exists, so the dependency is Unix-only.
+ztmux-core = { version = "0.1.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 interprocess = "2"

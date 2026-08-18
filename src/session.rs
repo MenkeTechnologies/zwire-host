@@ -43,6 +43,11 @@ pub fn caps() -> Vec<&'static str> {
     }
     #[cfg(feature = "pty")]
     c.push("pty");
+    // REAL tmux (`tmux_*`). Advertised so the palette can feature-test the HOST before it
+    // publishes tmux rows — absent here means this build cannot reach tmux at all, which is a
+    // different answer from `tmux_status`'s "no server is running right now".
+    #[cfg(all(unix, feature = "ztmux"))]
+    c.push("tmux");
     c
 }
 
@@ -678,6 +683,23 @@ impl Session {
                 // the `exit` frame.
                 self.ptys.remove(&Self::key(msg));
             }
+
+            /* ---- REAL tmux (tmuxops.rs, `ztmux-core`) ----
+            Matched by prefix rather than by name so the command list lives in ONE place —
+            `tmuxops::handle`'s own match — instead of being duplicated here and drifting.
+            An unknown `tmux_*` falls through that match to the same `unknown_cmd` the arm
+            below produces, so a typo is still an error rather than a silent success. */
+            #[cfg(all(unix, feature = "ztmux"))]
+            c if c.starts_with("tmux_") => respond(out, msg, crate::tmuxops::handle(c, msg)),
+            // Windows, or a build with `ztmux` off: answer explicitly. Falling through to
+            // `unknown_cmd` would read as "this host has no such command" when the truth is
+            // "this build has no tmux", and a caller would go looking for a typo it does not have.
+            #[cfg(not(all(unix, feature = "ztmux")))]
+            c if c.starts_with("tmux_") => respond(
+                out,
+                msg,
+                json!({"ok": false, "err": "tmux support not built into this host (feature `ztmux`, Unix only)"}),
+            ),
 
             _ => {
                 let _ = send_msg(out, &json!({"ok": false, "err": "unknown_cmd", "cmd": cmd}));

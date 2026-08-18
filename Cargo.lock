@@ -4178,8 +4178,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ztmux-core"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e38da5d069cf22a1f04bdf8a88a37332b27af1aef9d60c17f868863cf8ddbda1"
+dependencies = [
+ "libc",
+ "serde_json",
+]
+
+[[package]]
 name = "zwire-host"
-version = "0.3.15"
+version = "0.3.16"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4198,4 +4208,5 @@ dependencies = [
  "trash",
  "xattr",
  "zip",
+ "ztmux-core",
 ]

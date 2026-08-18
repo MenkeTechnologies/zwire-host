@@ -12,7 +12,7 @@
 [![platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-05d9e8?style=flat-square)](https://github.com/MenkeTechnologies/zwire-host)
 [![docs](https://img.shields.io/badge/docs-HUD-ff2e97?style=flat-square)](https://menketechnologies.github.io/zwire-host/)
 
-### `[UNIVERSAL LOCAL HOST // SYSINFO · FS · EXEC · PTY · KV · OS]`
+### `[UNIVERSAL LOCAL HOST // SYSINFO · FS · EXEC · PTY · TMUX · KV · OS]`
 
 > *"One pipe. One binary. The whole machine — reachable from anywhere."*
 
@@ -28,9 +28,10 @@ protocol every tool already has.
 It streams live **system stats** (`sysinfo`), runs **PTY terminals**
 (`portable-pty`), crawls and **watches/tails the filesystem**, **execs**
 commands, runs **background jobs** that notify on completion, lists/kills
-**processes**, brokers a **pub/sub event bus** that **federates across a mesh of
-peered hosts**, keeps a per-app **key/value store**, and does
-**clipboard / notify / open**. Every capability is reachable over every
+**processes**, drives the **real tmux server** the user is already running (over
+tmux's own wire protocol, no subprocess), brokers a **pub/sub event bus** that
+**federates across a mesh of peered hosts**, keeps a per-app **key/value store**,
+and does **clipboard / notify / open**. Every capability is reachable over every
 transport, and the whole thing is also a **Rust library** so sibling hosts (e.g.
 `zpwrchrome-host`) can embed it.
 
@@ -412,6 +413,49 @@ fully-meshed topologies without loops.
 | `{"cmd":"pty_spawn","id"?,"rows":R,"cols":C,"shell"?,"args"?,"cwd"?,"env"?}` | spawn a shell; stream `{ev:"output","b64":…}` (and `pty:id` when keyed). |
 | `{"cmd":"pty_write","id"?,"data"\|"b64":…}` | feed input. |
 | `{"cmd":"pty_resize","id"?,"rows":R,"cols":C}` / `{"cmd":"pty_kill","id"?}` | resize / kill; kill emits `{ev:"exit"}`. |
+
+**Real tmux** (`src/tmuxops.rs` — the multiplexer in the user's terminal, feature `ztmux`, Unix)
+
+The PTY commands above spawn a shell this host owns. These drive the tmux server the
+user is *already running*, through
+[`ztmux-core`](https://crates.io/crates/ztmux-core): tmux's client/server wire
+protocol (OpenBSD imsg framing, protocol version 8) spoken straight to the server
+socket — not control mode, and no `tmux` subprocess per call. The socket probe prefers
+a running [`ztmux`](https://github.com/MenkeTechnologies/ztmux) server over upstream
+`tmux` when both are present.
+
+Reads answer `{ok:true,result:<value>}` — uniform so one caller shape reads every
+command; `ok:true` means the call worked, and whether a server is running is the
+payload's own `running` flag. Writes answer `{ok:<bool>}` with an `err` when the server
+refused. The command names and arguments are the same vocabulary
+[`zterminal`](https://github.com/MenkeTechnologies/zterminal) uses to drive the same
+crate, so a verb learned in one app names the same call in the other.
+
+| Message | Reply / effect |
+|---|---|
+| `{"cmd":"tmux_status"}` | `{ok,running,socket,attached,bin}` — is there a server, which socket, and which binary would start one. Ask this before publishing tmux UI. |
+| `{"cmd":"tmux_tree"}` | sessions → windows → panes, each pane with a text preview. |
+| `{"cmd":"tmux_sessions"}` / `{"cmd":"tmux_panes"}` | dashboard summary (server + clients + totals) / a flat pane list with each pane's running command. |
+| `{"cmd":"tmux_search"}` | every pane's visible text as one searchable corpus. |
+| `{"cmd":"tmux_capture","pane":"%0"}` | that pane's visible text. |
+| `{"cmd":"tmux_send","panes":["%0",…],"text":"…","enter"?:true}` | type into a pane selection (the broadcast primitive). |
+| `{"cmd":"tmux_focus","session":"…","window"?:"…","pane"?:"…"}` | move the user's attention there. |
+| `{"cmd":"tmux_sync","window":"s:0","on":true}` | synchronize-panes on that window. `{"cmd":"tmux_broadcast_list"}` lists the windows and their sync state. |
+| `{"cmd":"tmux_run","args":[…]}` / `{"cmd":"tmux_command","args":[…]}` | any tmux command line: fire-and-forget, or waited with `{code,stdout,stderr}`. |
+| `{"cmd":"tmux_options"}` / `{"cmd":"tmux_set_option","scope":"server","name":"…","value":"…"}` | read / write server + session + window options. |
+| `{"cmd":"tmux_buffers"}` · `tmux_buffer` · `tmux_set_buffer` · `tmux_delete_buffer` · `tmux_paste_buffer` | the paste-buffer surface — the seam between the browser clipboard and the terminal. |
+| `{"cmd":"tmux_keys"}` · `tmux_set_key` · `tmux_unbind_key` | the key tables, readable and writable. |
+| `{"cmd":"tmux_export_state"}` / `{"cmd":"tmux_import_state","state":{…}}` | the whole server's options + bindings, out and back in. |
+| `{"cmd":"tmux_snap_save","name":"work","contents"?:true}` | native session save (layout, cwd, full command line, optionally pane contents) under `<zwire state dir>/tmux-snapshots`. |
+| `tmux_snap_list` · `tmux_snap_detail` · `tmux_snap_rename` · `tmux_snap_delete` | manage the saved set. |
+| `{"cmd":"tmux_snap_restore","name":"work","relaunch"?:false,"processes"?:"…"}` | restore it, starting a server if none is running. |
+
+The reads are `pure`; every write is `irreversible` and refused inside an open
+transaction — keystrokes land in a live shell, and option / binding / buffer writes
+overwrite server state with no pre-state captured anywhere. A build without the feature
+(or on Windows, where the crate's Unix socket transport has no counterpart) answers
+`tmux support not built into this host` rather than `unknown_cmd`, so a caller can tell
+a wrong build from a typo. `caps()` advertises `tmux` when the support is compiled in.
 
 **Legacy zwire scheme/ui** (unchanged): `{"cmd":"get"}` (replies with `version` +
 `scheme` + `ui`), `{"scheme":"matrix"}`, `{"ui":{…}}` bridge `~/.zwire/hud-scheme`

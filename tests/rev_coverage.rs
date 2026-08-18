@@ -148,6 +148,41 @@ const DELIBERATELY_IRREVERSIBLE: &[&str] = &[
     thread, the same reason every other spawning verb is in this ledger. */
     "page_reply",
     "page_serve",
+    /* ---- host: acts on the terminal multiplexer (tmuxops.rs) -----------------------------------
+    Every one of these lands in a tmux server this process does not own and cannot replay.
+
+    `tmux_send` types into a live shell: the keystrokes are consumed by whatever program has the
+    pane, and there is no "un-type" — the command may already have deleted a file. `tmux_run` and
+    `tmux_command` run an arbitrary tmux command line (`kill-pane`, `new-window`, anything), so
+    they inherit the worst case of the whole tmux command set. `tmux_focus` and `tmux_sync` move
+    the user's attention and flip synchronize-panes without recording what they were.
+
+    `tmux_set_option` / `tmux_set_key` / `tmux_unbind_key` / `tmux_set_buffer` /
+    `tmux_delete_buffer` / `tmux_paste_buffer` / `tmux_import_state` overwrite server state in
+    place; nothing reads the prior option, binding or buffer first, so there is nothing to restore
+    from — `tmux_import_state` replaces the WHOLE server's options and key tables at once.
+
+    The snapshot writes touch this host's own disk: `tmux_snap_save` creates or overwrites
+    `<name>.json` plus its captured pane contents, `tmux_snap_rename` moves both, `tmux_snap_delete`
+    unlinks them, and `tmux_snap_restore` additionally re-creates sessions in the live server and
+    may START one through `ops::ensure_socket` — the only subprocess in the tmux path.
+    (`tmux_status` and the tmux reads are classed `pure` in `REV`.) */
+    "tmux_command",
+    "tmux_delete_buffer",
+    "tmux_focus",
+    "tmux_import_state",
+    "tmux_paste_buffer",
+    "tmux_run",
+    "tmux_send",
+    "tmux_set_buffer",
+    "tmux_set_key",
+    "tmux_set_option",
+    "tmux_snap_delete",
+    "tmux_snap_rename",
+    "tmux_snap_restore",
+    "tmux_snap_save",
+    "tmux_sync",
+    "tmux_unbind_key",
     /* ---- host: sends something that cannot be recalled ----------------------------------------
     `pub` fans a message to every local subscriber and forwards it to every peer host; `sub` /
     `unsub` mutate that subscriber set (and `sub` immediately pushes a snapshot frame);
