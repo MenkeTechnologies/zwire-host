@@ -195,7 +195,9 @@ pub fn handle(cmd: &str, req: &Value) -> Value {
             };
             let argv: Vec<&str> = args.iter().map(String::as_str).collect();
             match transport::command(&sock, &argv) {
-                Ok(o) => json!({"ok": true, "code": o.exit, "stdout": o.stdout, "stderr": o.stderr}),
+                Ok(o) => {
+                    json!({"ok": true, "code": o.exit, "stdout": o.stdout, "stderr": o.stderr})
+                }
                 Err(e) => json!({"ok": false, "err": e.to_string()}),
             }
         }

@@ -22,7 +22,7 @@
 //!
 //! Enumeration cannot be a directory listing. The socket directory accumulates entries from
 //! processes that died without unlinking (and from every test that ever bound a scratch name), so a
-//! listing reports apps that have not run for days. [`list`] therefore *dials* every candidate with
+//! listing reports apps that have not run for days. [`crate::suite::list`] therefore *dials* every candidate with
 //! a short connect timeout and keeps only the ones that answer — liveness is proven, never assumed.
 //!
 //! ## Deliberately NOT a saga coordinator
@@ -31,7 +31,7 @@
 //! every enlisted participant on failure. Reimplementing that here would be a second, divergent
 //! coordinator. zwire is a plain participant/caller: one verb, one app, one reply. A chain that
 //! needs all-or-nothing across apps calls zgo's own `saga.plan` / `saga.run` verbs *through* this
-//! client, which is why [`call`] is enough to reach it.
+//! client, which is why [`crate::transport::call`] is enough to reach it.
 //!
 //! For the same reason `suite_call` is classed `irreversible` in the `zbus` REV table: zwire's
 //! journal holds zwire's own writes, and it cannot compensate a write that happened inside another
@@ -55,7 +55,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 /// process runs out of memory.
 const MAX_REPLY_BYTES: u64 = 8 * 1024 * 1024;
 
-/// This app's own bus names — excluded from [`list`] so "the other apps" means the other apps.
+/// This app's own bus names — excluded from [`crate::suite::list`] so "the other apps" means the other apps.
 /// `zwire-page` is the browser's own second endpoint ([`crate::page`]), served by whichever host
 /// process the browser is attached to: listing it would report zwire twice under a name no script
 /// should dial directly.

@@ -37,7 +37,7 @@
 //!   app ◀──── value ──────── bus daemon ◀───────────────────── {"cmd":"page_reply","qid",…}
 //! ```
 //!
-//! [`ask`] allocates the `qid`, publishes, and blocks on a condvar until [`fulfil`] delivers that
+//! [`crate::page::ask`] allocates the `qid`, publishes, and blocks on a condvar until [`crate::page::fulfil`] delivers that
 //! exact `qid` or the deadline passes. Correlation is the whole point: several apps may be asking at
 //! once, and a reply that arrived for someone else's question is worse than no reply.
 //!
@@ -61,7 +61,7 @@
 //! path through here would be a way to mutate the browser that `txn_abort` cannot unwind. `page.*` is
 //! read-only by construction, which is also why every verb in it classes `pure`.
 //!
-//! No page VALUES from form fields. [`STATES`] publishes a form's shape — action, method, field names
+//! No page VALUES from form fields. [`crate::page::STATES`] publishes a form's shape — action, method, field names
 //! and types — and never what is typed into it. A password manager's autofill would otherwise leave
 //! credentials readable by any process on the bus, which is not a trade a browser gets to make for
 //! its user.
@@ -173,8 +173,8 @@ pub fn states() -> Vec<Value> {
 
 /* ------------------------------------------------------------- rendezvous */
 
-/// Pending queries: `qid` → the answer, once it lands. An entry exists from [`ask`] publishing until
-/// it returns; [`fulfil`] fills it and wakes the waiter.
+/// Pending queries: `qid` → the answer, once it lands. An entry exists from [`crate::page::ask`] publishing until
+/// it returns; [`crate::page::fulfil`] fills it and wakes the waiter.
 type Pending = HashMap<u64, Option<Result<Value, String>>>;
 
 fn pending() -> &'static (Mutex<Pending>, Condvar) {
@@ -183,7 +183,7 @@ fn pending() -> &'static (Mutex<Pending>, Condvar) {
 }
 
 /// Monotonic query id. Never reused within a process, so a late reply to an abandoned query is
-/// dropped by [`fulfil`] rather than being handed to whoever asked next.
+/// dropped by [`crate::page::fulfil`] rather than being handed to whoever asked next.
 fn next_qid() -> u64 {
     static N: AtomicU64 = AtomicU64::new(0);
     N.fetch_add(1, Ordering::Relaxed) + 1
@@ -675,7 +675,7 @@ pub fn batch(reads: &[Value], timeout_ms: Option<u64>) -> Vec<Result<Value, Stri
 
 /// Project + test, in the process the browser is attached to.
 ///
-/// The projection is fetched with the SAME [`ask`] every read uses, so an assertion can never be
+/// The projection is fetched with the SAME [`crate::page::ask`] every read uses, so an assertion can never be
 /// evaluated against a cached or re-derived page: the value it tests is the one the tab was
 /// rendering at the moment the chain asked.
 fn assert_here(args: &Value, timeout: Duration) -> Value {

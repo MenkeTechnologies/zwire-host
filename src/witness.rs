@@ -43,7 +43,7 @@
 //!
 //! Re-reading premises one at a time would make the validation itself non-atomic: the page can change
 //! between validation reads, so a read set could "pass" in a state it was never simultaneously in.
-//! [`revalidate`] therefore sends the whole premise set as a single `page.batch`, which the HUD worker
+//! [`crate::witness::revalidate`] therefore sends the whole premise set as a single `page.batch`, which the HUD worker
 //! answers with one `chrome.scripting.executeScript` per target tab — a synchronous function body, so
 //! every projection in it comes from one DOM turn. One injection, one IPC round trip, one snapshot,
 //! regardless of how many premises there are.

@@ -6,7 +6,7 @@
 //!     desktop apps, plugins, and any language can connect and use every
 //!     capability. Each connection gets its own [`Session`]. Backed by a Unix
 //!     domain socket on macOS/Linux and a named pipe on Windows.
-//!   * [`call`]   — a one-line client: connect, send one request, print the
+//!   * [`crate::transport::call`]   — a one-line client: connect, send one request, print the
 //!     reply. Lets a shell script or editor talk to the daemon trivially.
 use crate::proto::{read_native, Out, Peer};
 use crate::session::Session;
