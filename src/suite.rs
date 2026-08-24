@@ -135,8 +135,10 @@ mod platform {
     use std::time::Duration;
 
     /// Nominal base — on Windows only the leaf matters, because the endpoint is a named pipe.
+    /// Spelled with the trailing separator so `candidates()` hands `read_dir` the exact string
+    /// it used when the path was written out inline there.
     pub fn socket_dir() -> PathBuf {
-        PathBuf::from(r"\\.\pipe")
+        PathBuf::from(r"\\.\pipe\")
     }
 
     fn pipe_name(app: &str) -> io::Result<interprocess::local_socket::Name<'static>> {
@@ -149,7 +151,13 @@ mod platform {
     /// enumerates. If that ever fails there is no fallback enumeration — a caller can still name an
     /// app explicitly, which is why `call`/`verbs` never depend on this.
     pub fn candidates() -> Vec<String> {
-        let mut names: Vec<String> = match std::fs::read_dir(r"\\.\pipe\") {
+        // Through `socket_dir()` rather than a second literal: the unix half
+        // enumerates its own `socket_dir()`, and the two spellings drifting
+        // apart is exactly the bug this module is shaped to avoid. It also
+        // keeps the fn used on Windows — `-D warnings` makes an unused one a
+        // hard error there, which only surfaced once the fmt failure ahead of
+        // clippy was cleared.
+        let mut names: Vec<String> = match std::fs::read_dir(socket_dir()) {
             Ok(rd) => rd
                 .flatten()
                 .filter_map(|e| {
