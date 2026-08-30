@@ -1,6 +1,6 @@
 [package]
 name = "zwire-host"
-version = "0.3.16"
+version = "0.3.17"
 edition = "2021"
 description = "Universal local host: system stats, filesystem, exec, PTY, real-tmux control and kv store, over Chrome native-messaging or a Unix-socket JSON daemon"
 authors = ["MenkeTechnologies <linux.dev25@gmail.com>"]
