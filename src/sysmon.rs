@@ -13,6 +13,9 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// How often the hottest-sensor read is actually performed; see [`max_temp`].
+const TEMP_INTERVAL: Duration = Duration::from_secs(10);
+
 /// A running stats stream. Dropping it stops the thread and joins it.
 pub struct Monitor {
     stop: Arc<AtomicBool>,
@@ -56,7 +59,7 @@ pub fn snapshot(
     disks: &sysinfo::Disks,
     sys: &sysinfo::System,
 ) -> Value {
-    use sysinfo::{Components, System};
+    use sysinfo::System;
     let mut d = serde_json::Map::new();
     d.insert("cpu".into(), json!(sys.global_cpu_usage().round() as i64));
     let (mu, mt) = (sys.used_memory(), sys.total_memory());
@@ -114,17 +117,8 @@ pub fn snapshot(
         json!({"up": (up as f64 / dt) as u64, "down": (down as f64 / dt) as u64}),
     );
 
-    let comps = Components::new_with_refreshed_list();
-    let mut tmax = f32::MIN;
-    for c in &comps {
-        if let Some(t) = c.temperature() {
-            if t > tmax {
-                tmax = t;
-            }
-        }
-    }
-    if tmax > f32::MIN {
-        d.insert("temp".into(), json!(tmax.round() as i64));
+    if let Some(t) = max_temp() {
+        d.insert("temp".into(), json!(t));
     }
     if let Some(h) = System::host_name() {
         d.insert("host".into(), json!(h.split('.').next().unwrap_or(&h)));
@@ -136,6 +130,54 @@ pub fn snapshot(
         d.insert("batt".into(), b);
     }
     Value::Object(d)
+}
+
+/// Hottest sensor in °C, re-read at most every [`TEMP_INTERVAL`] and served from cache in between.
+///
+/// The rate limit is the point. sysinfo's macOS/arm implementation re-enumerates every HID
+/// temperature service on *every* refresh and copies each one's `Product` string just to match
+/// sensors against the list it already holds — `ComponentsInner::refresh` in sysinfo 0.33.1's
+/// `unix/apple/macos/component/arm.rs:104-127` does the `IOHIDServiceClientCopyProperty` name fetch
+/// *before* the `iter_mut().find(|c| c.inner.label == name_str)` — so keeping a populated list saves
+/// only the one-time client creation, not the per-poll work. Sampling a 2 s poll put 243 of the
+/// enclosing call's 285 samples inside this one read (83 in `IOHIDServiceClientCopyProperty` for the
+/// names, 75 in the actual value reads), all to produce a single integer that does not need
+/// half-hertz resolution.
+///
+/// The `Components` is still held across calls, which is what lets the refresh reuse its
+/// `IOHIDEventSystemClient` instead of creating one each time.
+fn max_temp() -> Option<i64> {
+    use std::sync::{Mutex, OnceLock};
+    struct Cached {
+        comps: sysinfo::Components,
+        read_at: Instant,
+        temp: Option<i64>,
+    }
+    static CACHE: OnceLock<Mutex<Cached>> = OnceLock::new();
+
+    let cell = CACHE.get_or_init(|| {
+        Mutex::new(Cached {
+            comps: sysinfo::Components::new(),
+            // Far enough back that the first call always reads rather than serving a never-set cache.
+            read_at: Instant::now() - TEMP_INTERVAL,
+            temp: None,
+        })
+    });
+    // A poisoned lock drops the temp segment for the rest of the process rather than panicking a
+    // statusbar poll; every other segment in the frame is unaffected.
+    let mut c = cell.lock().ok()?;
+    if c.read_at.elapsed() < TEMP_INTERVAL {
+        return c.temp;
+    }
+    c.comps.refresh(true);
+    let hottest = c
+        .comps
+        .iter()
+        .filter_map(|k| k.temperature())
+        .fold(f32::MIN, f32::max);
+    c.temp = (hottest > f32::MIN).then(|| hottest.round() as i64);
+    c.read_at = Instant::now();
+    c.temp
 }
 
 fn stream(out: &Out, stop: &AtomicBool, interval: Duration, id: &str) {
