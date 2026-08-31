@@ -378,6 +378,10 @@ fn each_forwarded_action_gets_a_distinct_nonce() {
 /// says the subscriber existed, and the frame says it was actually written to this socket.
 #[test]
 fn a_subscription_on_a_bus_connection_receives_later_publishes() {
+    // These verbs are irreversible, so a transaction left open by a test running in parallel would
+    // have them refused at the gate. The guard both serialises against those tests and resets the
+    // journal, exactly as every other txn-sensitive test here does.
+    let _g = txn_guard();
     let frames = serve(&[
         r#"{"t":"sub","id":1,"topic":"demo"}"#,
         r#"{"t":"call","id":2,"verb":"pub","args":{"topic":"demo","data":{"hi":1}}}"#,
@@ -411,6 +415,10 @@ fn a_subscription_on_a_bus_connection_receives_later_publishes() {
 /// parsed, so this listing was always empty and the stream had nowhere to go.
 #[test]
 fn an_observer_started_on_the_bus_belongs_to_that_connection() {
+    // These verbs are irreversible, so a transaction left open by a test running in parallel would
+    // have them refused at the gate. The guard both serialises against those tests and resets the
+    // journal, exactly as every other txn-sensitive test here does.
+    let _g = txn_guard();
     let dir = std::env::temp_dir().join(format!("zwh-watch-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.display().to_string();
