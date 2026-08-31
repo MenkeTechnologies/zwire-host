@@ -44,8 +44,10 @@ fn hermetic() {
 /// Drive `serve_conn` with NDJSON request lines and collect the reply frames.
 fn serve(lines: &[&str]) -> Vec<Value> {
     let input = format!("{}\n", lines.join("\n"));
-    let mut out: Vec<u8> = Vec::new();
-    zbus::serve_conn(Cursor::new(input.into_bytes()), &mut out);
+    // A shared buffer, not a borrowed Vec: the connection owns its sink for as long as it lives.
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    zbus::serve_conn(Cursor::new(input.into_bytes()), zbus::Capture(buf.clone()));
+    let out = buf.lock().unwrap().clone();
     String::from_utf8(out)
         .expect("replies are utf-8")
         .lines()

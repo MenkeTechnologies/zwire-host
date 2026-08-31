@@ -20,10 +20,12 @@
 //!
 //! ```text
 //!   in : {"t":"call","id":N,"verb":"<cmd>","args":{…}} | {"t":"get","id":N,"state":"<cmd>"}
-//!        {"t":"verbs","id":N} | {"t":"sub","id":N,"event":"…"}
+//!        {"t":"verbs","id":N} | {"t":"sub","id":N,"topic":"…"}
 //!        {"t":"begin","id":N,"args":{…}} | {"t":"commit","id":N,"args":{"txn":T}}
 //!        {"t":"abort","id":N,"args":{"txn":T}} | {"t":"undo","id":N,"args":{…}}
 //!   out: {"t":"reply","id":N,"ok":true,"value":<host reply>} | {"t":"reply","id":N,"ok":false,"error":"…"}
+//!        {"t":"event","value":<host frame>}   — anything the host emits UNASKED: a sysinfo tick,
+//!                                              a tailed line, PTY output, a published message
 //! ```
 //!
 //! PROTOCOL DRIFT IS THE STANDING HAZARD HERE. Because the frames above are hand-mirrored rather
@@ -34,8 +36,13 @@
 //! to that corpus and to the match below in the same change.
 //!
 //! A `call`/`get` is translated to a host request `{"cmd":<verb>, …args}` and run through the REAL
-//! [`session::Session::handle`] with a CAPTURING sink, so every host command works with zero
-//! duplication.
+//! [`crate::session::Session::handle`], so every host command works here with zero duplication.
+//!
+//! The connection owns that session and a real [`crate::proto::Out`] for its whole life, which is
+//! what makes this a first-class transport rather than a request/reply veneer: a stream
+//! (`sysinfo_start`, `fs_watch`, `fs_tail`, `meter_stream`), a subscription (`sub`) and a terminal
+//! (`pty_*`) all keep answering on the socket that asked for them, as `event` frames. Hanging up
+//! drops the session, which tears those down exactly as it does on the NDJSON daemon.
 
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,7 +50,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 
-use crate::proto::Peer;
+use crate::proto::{Out, Peer};
 use crate::session::Session;
 
 /// The command surface advertised on `App::open("zwire")->verbs()`. Comprehensive — every host
@@ -517,7 +524,10 @@ pub fn rev(verb: &str) -> &'static str {
 
 /// A `std::io::Write` sink that captures everything written into a shared buffer, so we can run a real
 /// `Session` against an in-memory "connection" and read back the reply it emits via `respond`.
-struct Capture(Arc<Mutex<Vec<u8>>>);
+///
+/// Public because a bus connection now owns a real session for its whole life ([`serve_conn`]), so a
+/// test driving it needs a sink that OUTLIVES the call rather than a borrowed `Vec`.
+pub struct Capture(pub Arc<Mutex<Vec<u8>>>);
 
 impl Write for Capture {
     fn write(&mut self, b: &[u8]) -> io::Result<usize> {
@@ -827,26 +837,48 @@ fn args_of(req: &Value) -> Value {
     Value::Object(o)
 }
 
-/// Frame + write one zgui-bridge reply on any writer.
-fn reply<W: Write>(w: &mut W, id: u64, ok: bool, value: Value, error: Option<String>) {
-    let mut r = serde_json::Map::new();
-    r.insert("t".into(), json!("reply"));
-    r.insert("id".into(), json!(id));
-    r.insert("ok".into(), json!(ok));
-    if ok {
-        r.insert("value".into(), value);
-    } else if let Some(e) = error {
-        r.insert("error".into(), json!(e));
+/// Send one already-shaped answer on a bus connection. `Framing::Zgui` does the
+/// wrapping (`proto::zgui_frame`), so this only has to stamp the correlation id.
+fn reply(out: &Out, id: u64, value: Value) {
+    let mut v = value;
+    match v.as_object_mut() {
+        Some(o) => {
+            o.insert("id".into(), json!(id));
+        }
+        // A non-object answer (the surface is one, a page value can be) still
+        // needs its id, so box it in the envelope the framing understands.
+        None => v = json!({ "ok": true, "id": id, "value": v }),
     }
-    let mut line = serde_json::to_vec(&Value::Object(r)).unwrap_or_default();
-    line.push(b'\n');
-    let _ = w.write_all(&line);
-    let _ = w.flush();
+    let _ = out.send(&v);
 }
 
-/// Serve one accepted bus connection given its read + write halves: read zgui-bridge request frames,
-/// dispatch, reply. Platform-neutral — the per-platform accept loop supplies the two halves.
-pub fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
+fn reply_err(out: &Out, id: u64, error: String) {
+    let _ = out.send(&json!({ "ok": false, "id": id, "err": error }));
+}
+
+/// Serve one accepted bus connection: read zgui-bridge request frames, dispatch, reply.
+/// Platform-neutral — the per-platform accept loop supplies the two halves.
+///
+/// The connection owns a real [`Session`] and a real [`Out`], which is what makes the bus a
+/// FIRST-CLASS transport rather than a request/reply veneer over one. Before, every frame built a
+/// throwaway `Session` writing into a buffer and returned its first line (`run_command`) — so
+/// anything that answers on its own schedule was silently lost the moment the frame was done:
+///
+/// * `sysinfo_start`, `fs_watch`, `fs_tail`, `meter_stream` acknowledged, then streamed into a
+///   dropped buffer;
+/// * `sub` acknowledged, and no `pub` ever arrived (the subscriber died with the throwaway session);
+/// * `pty_spawn` reported a terminal that was killed on the next line, with no output and nothing to
+///   write to;
+/// * `page_get` came back `no reply from host session`, because the page answer arrives on another
+///   thread after the capture buffer has already been read.
+///
+/// All four now work here exactly as they do on the NDJSON daemon, because it is the same
+/// [`Session::handle`] and the same sink; the only difference is the framing on the way out. The
+/// session lives as long as the connection, so hanging up still tears down its PTYs, watchers and
+/// subscriptions.
+pub fn serve_conn<R: BufRead, W: Write + Send + 'static>(reader: R, w: W) {
+    let out = crate::proto::Peer::zgui(Box::new(w));
+    let mut sess = Session::new();
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
@@ -866,59 +898,81 @@ pub fn serve_conn<R: BufRead, W: Write>(reader: R, mut w: W) {
                 let verb = req.get("verb").and_then(Value::as_str).unwrap_or("");
                 let args = req.get("args").cloned().unwrap_or_else(|| json!({}));
                 let txn = req.get("txn").and_then(Value::as_u64);
-                match call_verb(verb, args, txn) {
-                    Ok(v) => reply(&mut w, id, true, v, None),
-                    Err(e) => reply(&mut w, id, false, Value::Null, Some(e)),
-                }
+                dispatch_call(&mut sess, &out, id, verb, args, txn);
             }
+            // A `get` names a state, which is a verb taking no arguments.
             Some("get") => {
-                let state = req.get("state").and_then(Value::as_str).unwrap_or("");
-                reply(&mut w, id, true, run_command(state, &json!({})), None);
+                let state = req
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                dispatch_call(&mut sess, &out, id, &state, json!({}), None);
             }
-            Some("verbs") => reply(&mut w, id, true, surface(), None),
-            // Event subscriptions are not bridged yet (host pub/sub is process-global and not
-            // request/reply). Acknowledge so the client doesn't hang.
-            Some("sub") => reply(&mut w, id, true, Value::Null, None),
+            Some("verbs") => reply(&out, id, surface()),
+            // A real subscription now: the session registers this CONNECTION as the subscriber, so
+            // every later `pub` on the topic arrives here as an event frame.
+            Some("sub") => {
+                let topic = req.get("topic").or_else(|| req.get("state")).cloned();
+                let mut msg = json!({ "cmd": "sub", "id": id });
+                if let (Some(t), Some(o)) = (topic, msg.as_object_mut()) {
+                    o.insert("topic".into(), t);
+                }
+                sess.handle(&out, &msg);
+            }
             // Transactional compensation. `begin`/`commit`/`abort` are host commands so an
             // in-process caller reaches the same journal; `undo` is a browser action, executed by
             // the HUD worker that holds the pre-state.
-            Some("begin") => reply(
-                &mut w,
-                id,
-                true,
-                run_command("txn_begin", &args_of(&req)),
-                None,
-            ),
-            Some("commit") => reply(
-                &mut w,
-                id,
-                true,
-                run_command("txn_commit", &args_of(&req)),
-                None,
-            ),
-            Some("abort") => reply(
-                &mut w,
-                id,
-                true,
-                run_command("txn_abort", &args_of(&req)),
-                None,
-            ),
-            Some("undo") => reply(
-                &mut w,
-                id,
-                true,
-                run_command("browser.undo", &args_of(&req)),
-                None,
-            ),
-            _ => reply(
-                &mut w,
-                id,
-                false,
-                Value::Null,
-                Some("unknown request kind".into()),
-            ),
+            Some("begin") => reply(&out, id, run_command("txn_begin", &args_of(&req))),
+            Some("commit") => reply(&out, id, run_command("txn_commit", &args_of(&req))),
+            Some("abort") => reply(&out, id, run_command("txn_abort", &args_of(&req))),
+            Some("undo") => reply(&out, id, run_command("browser.undo", &args_of(&req))),
+            _ => reply_err(&out, id, "unknown request kind".into()),
         }
     }
+}
+
+/// One `call`/`get` frame.
+///
+/// A `browser.*` or `page.*` verb keeps going through [`call_verb`]: the first is a fire-and-forget
+/// publish whose reply is a delivery receipt, and the second is a question for the browser that
+/// [`crate::page`] already answers on its own thread. Everything else is a HOST command, and goes to
+/// this connection's session so its streams, subscriptions and terminals live as long as the caller
+/// is there to read them.
+fn dispatch_call(
+    sess: &mut Session,
+    out: &Out,
+    id: u64,
+    verb: &str,
+    args: Value,
+    txn: Option<u64>,
+) {
+    if verb.starts_with("browser.") || crate::page::is_page_request(verb) {
+        match call_verb(verb, args, txn) {
+            Ok(v) => reply(out, id, v),
+            Err(e) => reply_err(out, id, e),
+        }
+        return;
+    }
+    // The transaction gate is `call_verb`'s, and a host command still has to pass it: an
+    // irreversible verb inside an open transaction is refused at call time, here as anywhere.
+    if crate::txn::any_open() && txn.is_none_or(crate::txn::is_open) && rev(verb) == "irreversible"
+    {
+        reply_err(out, id, format!("verb not reversible: {verb}"));
+        return;
+    }
+    let mut msg = args;
+    if let Some(o) = msg.as_object_mut() {
+        o.insert("cmd".into(), json!(verb));
+        // A capability that keys itself by `id` — a watcher, a PTY, a meter — takes that key from
+        // the request's own `id`, which is the same field the bus correlates on. When the caller
+        // named one, it wins and the reply comes back under it (exactly how the NDJSON daemon
+        // behaves); otherwise the frame's correlation id is used.
+        o.entry("id").or_insert_with(|| json!(id));
+    } else {
+        msg = json!({ "cmd": verb, "id": id });
+    }
+    sess.handle(out, &msg);
 }
 
 /* ---- Unix domain socket (macOS / Linux) ---- */

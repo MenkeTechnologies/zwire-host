@@ -63,8 +63,10 @@ fn hermetic() {
 fn serve(lines: &[&str]) -> Vec<Value> {
     hermetic();
     let input = format!("{}\n", lines.join("\n"));
-    let mut out: Vec<u8> = Vec::new();
-    zbus::serve_conn(Cursor::new(input.into_bytes()), &mut out);
+    // A shared buffer, not a borrowed Vec: the connection owns its sink for as long as it lives.
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    zbus::serve_conn(Cursor::new(input.into_bytes()), zbus::Capture(buf.clone()));
+    let out = buf.lock().unwrap().clone();
     String::from_utf8(out)
         .expect("replies are utf-8")
         .lines()
@@ -364,4 +366,77 @@ fn each_forwarded_action_gets_a_distinct_nonce() {
         seen.windows(2).all(|w| w[1] > w[0]),
         "stamps must rise monotonically: {seen:?}"
     );
+}
+
+/// A bus connection holds a REAL session, so a capability that answers on its own schedule reaches
+/// the caller instead of dying with the frame that started it.
+///
+/// `sub` is the cheapest proof and the one that used to be a lie: the old dispatcher acknowledged a
+/// subscription and registered nothing, because the session it registered on was a throwaway that
+/// was dropped before the next line was read. Here the same connection subscribes, publishes, and
+/// must see its own message come back as an `event` frame — the delivery count in the `pub` reply
+/// says the subscriber existed, and the frame says it was actually written to this socket.
+#[test]
+fn a_subscription_on_a_bus_connection_receives_later_publishes() {
+    let frames = serve(&[
+        r#"{"t":"sub","id":1,"topic":"demo"}"#,
+        r#"{"t":"call","id":2,"verb":"pub","args":{"topic":"demo","data":{"hi":1}}}"#,
+    ]);
+    let published = frames
+        .iter()
+        .find(|f| f["id"] == json!(2))
+        .expect("the pub is answered");
+    assert_eq!(
+        published["value"]["delivered"],
+        json!(1),
+        "the subscription registered a live subscriber: {published}"
+    );
+    let event = frames
+        .iter()
+        .find(|f| f["t"] == json!("event"))
+        .expect("the published message arrives as an event frame");
+    assert_eq!(event["value"]["ev"], json!("pub"), "event shape: {event}");
+    assert_eq!(event["value"]["topic"], json!("demo"));
+    assert_eq!(event["value"]["data"], json!({"hi": 1}));
+    // An event is not a reply: it correlates to nothing, and a client that matched it to a pending
+    // id would resolve the wrong call.
+    assert!(event.get("id").is_none(), "events carry no id: {event}");
+}
+
+/// An observer started on a bus connection BELONGS to it — the proof that the connection owns a
+/// real session rather than a throwaway per frame.
+///
+/// `fs_watch` registers its watcher on the session; `watch_list` reads that same map back. Under the
+/// old dispatcher the watcher was registered on a session that was dropped before the next line was
+/// parsed, so this listing was always empty and the stream had nowhere to go.
+#[test]
+fn an_observer_started_on_the_bus_belongs_to_that_connection() {
+    let dir = std::env::temp_dir().join(format!("zwh-watch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.display().to_string();
+    let frames = serve(&[
+        &format!(r#"{{"t":"call","id":1,"verb":"fs_watch","args":{{"id":"w1","path":"{path}"}}}}"#),
+        r#"{"t":"call","id":2,"verb":"watch_list","args":{}}"#,
+        r#"{"t":"call","id":3,"verb":"watch_stop","args":{"id":"w1"}}"#,
+        r#"{"t":"call","id":4,"verb":"watch_list","args":{}}"#,
+    ]);
+    // The watcher named itself `w1`, so its own reply comes back under that key — the same
+    // correlation rule the NDJSON daemon uses.
+    assert!(
+        frames.iter().any(|f| f["id"] == json!("w1")),
+        "the start is answered under the key it named: {frames:?}"
+    );
+    let listed = frames.iter().find(|f| f["id"] == json!(2)).unwrap();
+    assert_eq!(
+        listed["value"]["watchers"],
+        json!(["w1"]),
+        "the watcher outlived the frame that started it: {listed}"
+    );
+    let after = frames.iter().find(|f| f["id"] == json!(4)).unwrap();
+    assert_eq!(
+        after["value"]["watchers"],
+        json!([]),
+        "and stopping it on the same session removed it: {after}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

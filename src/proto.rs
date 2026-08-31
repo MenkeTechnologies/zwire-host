@@ -25,6 +25,57 @@ pub enum Framing {
     Native,
     /// One compact JSON object per line.
     Ndjson,
+    /// The zgui-bridge automation bus: NDJSON, but every message is wrapped in
+    /// the frame that bus speaks — a reply when it carries a correlation `id`,
+    /// an event when it does not.
+    ///
+    /// This is what lets the bus serve the SAME [`crate::Session`] as every
+    /// other transport. A capability that pushes frames on its own schedule
+    /// (sysinfo, `fs_tail`, a bus subscription, PTY output) writes plain host
+    /// messages through [`Out`] and never learns which transport is carrying
+    /// them; the framing turns each one into `{"t":"event","value":…}` on its
+    /// way out.
+    Zgui,
+}
+
+/// One host message as the zgui-bridge frame that carries it.
+///
+/// * `{ok:false, err}` → `{"t":"reply", ok:false, error}` — the bus names a
+///   failure `error`, the host names it `err`, and this is the one place that
+///   knows.
+/// * anything else with an `id` → `{"t":"reply", id, ok:true, value}`, `value`
+///   being the message itself (its `id` stripped: the frame carries it).
+/// * anything without an `id` → `{"t":"event", value}`. Nothing asked for it,
+///   so it cannot be a reply to anything.
+fn zgui_frame(v: &Value) -> Value {
+    // The id is copied verbatim, not coerced to a number: a capability that keys itself by `id`
+    // (a watcher, a PTY) answers under ITS key, and turning that into "no id" would file a real
+    // reply as an unsolicited event.
+    let id = v.get("id").filter(|i| !i.is_null()).cloned();
+    let failed = v.get("ok") == Some(&Value::Bool(false));
+    if failed {
+        let err = v
+            .get("err")
+            .and_then(Value::as_str)
+            .unwrap_or("refused")
+            .to_string();
+        let mut f = serde_json::Map::new();
+        f.insert("t".into(), Value::String("reply".into()));
+        if let Some(i) = id {
+            f.insert("id".into(), i);
+        }
+        f.insert("ok".into(), Value::Bool(false));
+        f.insert("error".into(), Value::String(err));
+        return Value::Object(f);
+    }
+    let mut body = v.clone();
+    if let Some(o) = body.as_object_mut() {
+        o.remove("id");
+    }
+    match id {
+        Some(i) => serde_json::json!({ "t": "reply", "id": i, "ok": true, "value": body }),
+        None => serde_json::json!({ "t": "event", "value": body }),
+    }
 }
 
 /// The write half of a connection. Cloneable via [`Out`] so background threads
@@ -54,9 +105,21 @@ impl Peer {
     pub fn ndjson(w: Box<dyn Write + Send>) -> Out {
         Self::new(w, Framing::Ndjson)
     }
+    /// zgui-bridge sink (the automation bus).
+    pub fn zgui(w: Box<dyn Write + Send>) -> Out {
+        Self::new(w, Framing::Zgui)
+    }
     /// Frame and write one message. Errors when the peer has hung up, which
     /// streaming callers use as the signal to stop.
     pub fn send(&self, v: &Value) -> io::Result<()> {
+        let framed;
+        let v = match self.framing {
+            Framing::Zgui => {
+                framed = zgui_frame(v);
+                &framed
+            }
+            _ => v,
+        };
         let data = serde_json::to_vec(v).unwrap_or_default();
         let mut o = self.w.lock().unwrap();
         match self.framing {
@@ -64,7 +127,7 @@ impl Peer {
                 o.write_all(&(data.len() as u32).to_le_bytes())?;
                 o.write_all(&data)?;
             }
-            Framing::Ndjson => {
+            Framing::Ndjson | Framing::Zgui => {
                 o.write_all(&data)?;
                 o.write_all(b"\n")?;
             }

@@ -67,13 +67,22 @@ a fresh machine.
 
 ## [0x01] Transports
 
-Both transports feed the **same dispatcher**, so every command below works over
-either one.
+All three transports feed the **same dispatcher** and the **same per-connection
+session**, so every command below — including the ones that stream — works over
+any of them.
 
 | Transport | For | Framing |
 |---|---|---|
 | **Native messaging** (default) | Chrome / browser extensions | little-endian `u32` length + JSON body, on `stdin`/`stdout` |
 | **Local-socket daemon** (`serve`) | tmux, emacs, desktop apps, plugins, any language | newline-delimited JSON (one object per line) |
+| **GUI Automation Bus** (`App::open("zwire")`) | other suite apps, stryke scripts, shell plugins | NDJSON zgui-bridge frames: `{"t":"call"…}` in, `{"t":"reply"…}` / `{"t":"event"…}` out |
+
+A bus connection owns a real session, so a **stream** (`sysinfo_start`,
+`fs_watch`, `fs_tail`, `meter_stream`), a **subscription** (`sub`) and a
+**terminal** (`pty_*`) keep answering on the socket that asked for them, as
+`event` frames, and hanging up tears them down. Anything the host emits unasked
+is an `event`; anything answering a frame is a `reply` carrying that frame's
+`id`.
 
 The daemon uses each platform's native local IPC — a **Unix domain socket** on
 macOS/Linux and a **named pipe** on Windows — so it runs everywhere your apps do:
