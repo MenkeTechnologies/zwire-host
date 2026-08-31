@@ -189,6 +189,11 @@ const DELIBERATELY_IRREVERSIBLE: &[&str] = &[
     `peer_connect` dials another host and joins a mesh; `notify` puts a desktop notification on the
     user's screen via osascript / notify-send. */
     "notify",
+    // `theme` persists the scheme/ui/palette to the shared `global.toml`, publishes it to every
+    // local subscriber and broadcasts it to every peer host. The journal keeps the verb and its
+    // args, never the theme that was in force first, and the publish has already left the process
+    // by the time any abort could run.
+    "theme",
     "peer_connect",
     "pub",
     "sub",

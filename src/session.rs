@@ -149,6 +149,65 @@ impl Session {
         });
     }
 
+    /// Write any of `{scheme, ui, palette, schemes}` present in `msg`: persist
+    /// it, publish it to local subscribers, and broadcast it to peers, so every
+    /// app on every machine follows live. The reply merges each field written,
+    /// so a single-field write keeps its historical shape.
+    ///
+    /// Reachable two ways on purpose. The historical shape is COMMANDLESS
+    /// (`{"scheme":"matrix"}`), which the browser's native port sends — but a
+    /// frame on the automation bus always carries a verb, so a bus client
+    /// (`zshrs-zwire`, another suite app) had no way to reach this at all. The
+    /// `theme` command is that door; both land here.
+    fn theme_write(msg: &Value) -> Value {
+        let has_ui = !msg["ui"].is_null();
+        let has_scheme = msg["scheme"].as_str().is_some();
+        let has_palette = msg["palette"].is_object();
+        let has_schemes = msg["schemes"].is_array();
+        if !(has_ui || has_scheme || has_palette || has_schemes) {
+            return json!({"ok": false, "err": "empty"});
+        }
+        let d = store::theme_dir();
+        let mut resp = serde_json::Map::new();
+        resp.insert("ok".to_string(), Value::Bool(true));
+        if has_ui {
+            let ui = store::write_ui(&d, &msg["ui"]);
+            crate::theme_watch::note_ui(&ui); // record our own write so the watcher won't echo it
+            bus::publish("ui", &ui);
+            peer::broadcast("ui", &ui);
+            resp.insert("ui".to_string(), ui);
+        }
+        if has_scheme {
+            let s = msg["scheme"].as_str().unwrap();
+            if store::is_valid_scheme(s) {
+                store::write_scheme(&d, s);
+                crate::theme_watch::note_scheme(s);
+                let data = json!({ "scheme": s });
+                bus::publish("scheme", &data);
+                peer::broadcast("scheme", &data);
+                resp.insert("scheme".to_string(), Value::String(s.to_string()));
+            } else {
+                resp.insert("ok".to_string(), Value::Bool(false));
+                resp.insert("err".to_string(), Value::String("bad_scheme".to_string()));
+            }
+        }
+        if has_palette {
+            let p = store::write_palette(&d, &msg["palette"]);
+            crate::theme_watch::note_palette(&p);
+            bus::publish("palette", &p);
+            peer::broadcast("palette", &p);
+            resp.insert("palette".to_string(), p);
+        }
+        if has_schemes {
+            let s = store::write_schemes(&d, &msg["schemes"]);
+            crate::theme_watch::note_schemes(&s);
+            bus::publish("schemes", &s);
+            peer::broadcast("schemes", &s);
+            resp.insert("schemes".to_string(), s);
+        }
+        Value::Object(resp)
+    }
+
     /// Handle one request. `out` is the connection's write sink; background
     /// capabilities (sysinfo, PTY output) keep writing to it after this returns.
     pub fn handle(&mut self, out: &Out, msg: &Value) {
@@ -160,57 +219,10 @@ impl Session {
             return;
         }
         // Legacy commandless theme writes: {ui:{…}}, {scheme:"…"}, {palette:{…}} —
-        // any one, or combined ({scheme, ui, palette} in one message). Every present
-        // field is written, published to local subscribers, and broadcast to peers
-        // so all apps on all machines stay in sync live. The response merges each
-        // field, so a single-field write keeps its historical shape.
-        let has_ui = !msg["ui"].is_null();
-        let has_scheme = msg["scheme"].as_str().is_some();
-        let has_palette = msg["palette"].is_object();
-        let has_schemes = msg["schemes"].is_array();
-        if has_ui || has_scheme || has_palette || has_schemes {
-            let d = store::theme_dir();
-            let mut resp = serde_json::Map::new();
-            resp.insert("ok".to_string(), Value::Bool(true));
-            if has_ui {
-                let ui = store::write_ui(&d, &msg["ui"]);
-                crate::theme_watch::note_ui(&ui); // record our own write so the watcher won't echo it
-                bus::publish("ui", &ui);
-                peer::broadcast("ui", &ui);
-                resp.insert("ui".to_string(), ui);
-            }
-            if has_scheme {
-                let s = msg["scheme"].as_str().unwrap();
-                if store::is_valid_scheme(s) {
-                    store::write_scheme(&d, s);
-                    crate::theme_watch::note_scheme(s);
-                    let data = json!({ "scheme": s });
-                    bus::publish("scheme", &data);
-                    peer::broadcast("scheme", &data);
-                    resp.insert("scheme".to_string(), Value::String(s.to_string()));
-                } else {
-                    resp.insert("ok".to_string(), Value::Bool(false));
-                    resp.insert("err".to_string(), Value::String("bad_scheme".to_string()));
-                }
-            }
-            if has_palette {
-                let p = store::write_palette(&d, &msg["palette"]);
-                crate::theme_watch::note_palette(&p);
-                bus::publish("palette", &p);
-                peer::broadcast("palette", &p);
-                resp.insert("palette".to_string(), p);
-            }
-            if has_schemes {
-                let s = store::write_schemes(&d, &msg["schemes"]);
-                crate::theme_watch::note_schemes(&s);
-                bus::publish("schemes", &s);
-                peer::broadcast("schemes", &s);
-                resp.insert("schemes".to_string(), s);
-            }
-            respond(out, msg, Value::Object(resp));
-        } else {
-            respond(out, msg, json!({"ok": false, "err": "empty"}));
-        }
+        // any one, or combined ({scheme, ui, palette} in one message). Same
+        // handler as the `theme` command below, so both shapes write, publish and
+        // broadcast identically.
+        respond(out, msg, Self::theme_write(msg));
     }
 
     fn handle_cmd(&mut self, out: &Out, msg: &Value, cmd: &str) {
@@ -270,6 +282,13 @@ impl Session {
                     json!({"ok": true, "version": crate::VERSION, "scheme": store::current_scheme(&d), "ui": store::current_ui(&d), "palette": store::current_palette(&d), "schemes": store::current_schemes(&d)}),
                 );
             }
+
+            /* ---- theme write, as a COMMAND (see `theme_write`) ----
+            The counterpart of the `get` arm above: `get` reads the shared theme,
+            `theme` writes it. Named so a client that can only send verbs — the
+            automation bus, where `{"t":"call","verb":"theme"}` becomes
+            `{"cmd":"theme", …}` — can change the scheme, not only read it. */
+            "theme" => respond(out, msg, Self::theme_write(msg)),
 
             /* ---- shared host command log (HUD HOST tab) ---- */
             "hostlog" => {

@@ -152,6 +152,10 @@ const SURFACE_VERBS: &[&str] = &[
     "sysinfo_once",
     "sysinfo_start",
     "sysinfo_stop",
+    // THEME write (`session::theme_write`): the command form of the historical commandless
+    // `{"scheme":…}` / `{"ui":…}` message, so a bus client — which can only send verbs — can
+    // change the shared scheme, not merely read it back through `get`.
+    "theme",
     // TMUX — the REAL multiplexer over the `ztmux-core` wire client (tmuxops.rs). Advertised
     // unconditionally: the surface is a manifest of what the COMMAND VOCABULARY is, and a verb
     // that vanishes on a Windows build (or one with `ztmux` off) would have a script guessing

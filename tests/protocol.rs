@@ -1079,3 +1079,38 @@ fn verbs_serves_the_reversibility_table_the_trigger_editor_reads() {
     drop(si);
     let _ = child.wait();
 }
+
+/// The `theme` COMMAND is the bus-reachable door onto the same write the
+/// commandless `{scheme}` message performs — a bus frame always carries a verb,
+/// so without this a bus client could read the scheme (`get`) but never set it.
+#[test]
+fn theme_command_writes_the_same_state_as_a_commandless_write() {
+    let home = temp_home();
+    let mut child = spawn_stdio(&home);
+    let mut si = child.stdin.take().unwrap();
+    let mut so = child.stdout.take().unwrap();
+
+    nm_send(
+        &mut si,
+        &json!({"cmd": "theme", "scheme": "matrix", "ui": {"light": true}}),
+    );
+    let w = nm_recv(&mut so).expect("a theme reply");
+    assert_eq!(w["ok"], json!(true), "theme write ok: {w}");
+    assert_eq!(w["scheme"], json!("matrix"), "scheme echoed: {w}");
+    assert_eq!(w["ui"]["light"], json!(true), "ui echoed: {w}");
+
+    nm_send(&mut si, &json!({"cmd": "get"}));
+    let g = nm_recv(&mut so).expect("a get reply");
+    assert_eq!(g["scheme"], json!("matrix"), "scheme persisted: {g}");
+    assert_eq!(g["ui"]["light"], json!(true), "ui persisted: {g}");
+
+    // An unknown name is refused here exactly as it is on the commandless path,
+    // so a typo cannot poison global.toml through the new door.
+    nm_send(&mut si, &json!({"cmd": "theme", "scheme": "bogus"}));
+    let bad = nm_recv(&mut so).expect("a reply");
+    assert_eq!(bad["ok"], json!(false), "bad scheme refused: {bad}");
+    assert_eq!(bad["err"], json!("bad_scheme"), "reason given: {bad}");
+
+    drop(si);
+    let _ = child.wait();
+}
