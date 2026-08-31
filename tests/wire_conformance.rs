@@ -421,9 +421,14 @@ fn an_observer_started_on_the_bus_belongs_to_that_connection() {
     let _g = txn_guard();
     let dir = std::env::temp_dir().join(format!("zwh-watch-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.display().to_string();
+    // Built with serde, never by formatting the path into a string literal: a Windows path is full
+    // of backslashes, and hand-written JSON turns them into escape sequences — the frame then fails
+    // to parse and is skipped, which looks exactly like a watcher that did not register.
+    let start = json!({"t": "call", "id": 1, "verb": "fs_watch",
+                       "args": {"id": "w1", "path": dir.display().to_string()}})
+    .to_string();
     let frames = serve(&[
-        &format!(r#"{{"t":"call","id":1,"verb":"fs_watch","args":{{"id":"w1","path":"{path}"}}}}"#),
+        &start,
         r#"{"t":"call","id":2,"verb":"watch_list","args":{}}"#,
         r#"{"t":"call","id":3,"verb":"watch_stop","args":{"id":"w1"}}"#,
         r#"{"t":"call","id":4,"verb":"watch_list","args":{}}"#,
