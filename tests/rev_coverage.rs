@@ -196,6 +196,9 @@ const DELIBERATELY_IRREVERSIBLE: &[&str] = &[
     "theme",
     "peer_connect",
     "pub",
+    // `remote` hands an ARBITRARY request to another host, which runs it there: the journal keeps
+    // this side's verb and args, and the effect is on a machine this process cannot compensate.
+    "remote",
     "sub",
     "unsub",
     /* ---- browser: effects the HUD journal cannot see ------------------------------------------

@@ -127,7 +127,6 @@ const SURFACE_VERBS: &[&str] = &[
     "page_reply",
     "page_serve",
     "page_states",
-    "peer",
     "peer_connect",
     "peers",
     "ping",
@@ -137,6 +136,11 @@ const SURFACE_VERBS: &[&str] = &[
     "pty_spawn",
     "pty_write",
     "pub",
+    // REMOTE: run one request on a PEER host (`session` "remote" arm, peer.rs). Published here
+    // because it is a real command a client can send; it was previously advertised as "peer",
+    // which no arm answers — the surface named a verb that did not exist while hiding one that
+    // did.
+    "remote",
     "stryke_lsp_send",
     "stryke_lsp_start",
     "stryke_lsp_stop",
@@ -387,7 +391,6 @@ const REV: &[(&str, &str)] = &[
     ("job_result", "pure"),
     ("kv_get", "pure"),
     ("kv_keys", "pure"),
-    ("peer", "pure"),
     ("peers", "pure"),
     ("ping", "pure"),
     ("ps", "pure"),
