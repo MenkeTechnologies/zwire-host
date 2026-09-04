@@ -74,10 +74,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create ${{ github.ref_name }} \
-            --title "${{ github.ref_name }}" \
-            --generate-notes \
-            artifacts/*.tar.gz
+          # A tag pushed again — a re-cut release, a tag moved onto a newer
+          # commit — reaches a release that already exists, and `create` fails
+          # on it. Upload into the existing one instead, so a rebuilt tag
+          # refreshes its artifacts rather than turning the workflow red.
+          if gh release view ${{ github.ref_name }} >/dev/null 2>&1; then
+            gh release upload ${{ github.ref_name }} --clobber artifacts/*.tar.gz
+          else
+            gh release create ${{ github.ref_name }} \
+              --title "${{ github.ref_name }}" \
+              --generate-notes \
+              artifacts/*.tar.gz
+          fi
 
   homebrew:
     name: Update Homebrew tap
