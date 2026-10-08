@@ -328,6 +328,16 @@ const SURFACE_VERBS: &[&str] = &[
     "browser.restoreArchived",
     "browser.recentTab",
     "browser.audioFocus",
+    // tab-group editing, workspaces and the reading-list queue (HUD zworkspace-core.js)
+    "browser.nameGroup",
+    "browser.colorGroup",
+    "browser.closeGroup",
+    "browser.groupToWindow",
+    "browser.saveWorkspace",
+    "browser.openWorkspace",
+    "browser.deleteWorkspace",
+    "browser.readNext",
+    "browser.markRead",
     // terminal
     "browser.tmux",
     // transactional compensation (see `txn.rs`); `browser.undo` is executed by the HUD worker,

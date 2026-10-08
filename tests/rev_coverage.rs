@@ -333,6 +333,26 @@ const DELIBERATELY_IRREVERSIBLE: &[&str] = &[
     "browser.restoreArchived",
     "browser.snoozeTab",
     "browser.wakeSnoozed",
+    /* ---- browser: tab groups, workspaces, reading list (HUD zworkspace-core.js) ---------------
+    The journal observes tabs and windows, never `chrome.tabGroups` or `chrome.readingList`.
+    `nameGroup` / `colorGroup` rewrite a group's title or colour (and group an ungrouped tab first),
+    with no record of the prior value. `closeGroup` removes the group's tabs: replaying the observed
+    closes as `reopen`s brings the tabs back ungrouped, so the abort would report a clean revert of
+    a group that no longer exists. `groupToWindow` is the same shape for a move — the inverse
+    `move`s land the tabs back outside any group. `saveWorkspace` / `deleteWorkspace` write
+    `zb_workspaces`, which the journal never sees. `openWorkspace` creates windows, pins and
+    groups in a sequence that runs past the settle window for any real workspace, so the journal
+    would hold an arbitrary prefix of it. `readNext` opens a tab AND marks the entry read;
+    closing the tab leaves it marked. `markRead` flips reading-list state only. */
+    "browser.closeGroup",
+    "browser.colorGroup",
+    "browser.deleteWorkspace",
+    "browser.groupToWindow",
+    "browser.markRead",
+    "browser.nameGroup",
+    "browser.openWorkspace",
+    "browser.readNext",
+    "browser.saveWorkspace",
 ];
 
 /// Every verb on the advertised surface, as the surface itself reports it.

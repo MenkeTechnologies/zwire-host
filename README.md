@@ -237,7 +237,8 @@ everywhere; it is transactional only where a compensation genuinely exists.
   zoomed, window created — and replays a matching set of inverse ops. Verbs whose
   effects fall outside it (window state and bounds, tab groups, downloads,
   bookmarks, the reading list, browsing data, extension management, the
-  snooze schedule and tab archive, the audio-focus setting) journal nothing,
+  snooze schedule and tab archive, the audio-focus setting, saved
+  workspaces) journal nothing,
   so classing one `inverse` would produce an abort that reports a clean revert
   having restored nothing.
 
