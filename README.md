@@ -236,9 +236,10 @@ everywhere; it is transactional only where a compensation genuinely exists.
   events — created, removed, moved, detached, pinned, muted, url, activated,
   zoomed, window created — and replays a matching set of inverse ops. Verbs whose
   effects fall outside it (window state and bounds, tab groups, downloads,
-  bookmarks, the reading list, browsing data, extension management) journal
-  nothing, so classing one `inverse` would produce an abort that reports a clean
-  revert having restored nothing.
+  bookmarks, the reading list, browsing data, extension management, the
+  snooze schedule and tab archive, the audio-focus setting) journal nothing,
+  so classing one `inverse` would produce an abort that reports a clean revert
+  having restored nothing.
 
 Every verb that is deliberately left irreversible is listed with its reason in
 `tests/rev_coverage.rs`, and the test there fails if a verb is added to the

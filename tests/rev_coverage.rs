@@ -320,6 +320,19 @@ const DELIBERATELY_IRREVERSIBLE: &[&str] = &[
     "browser.notify",
     "browser.tmux",
     "browser.uninstallExtension",
+    /* ---- browser: tab flow (HUD ztabflow-core.js) ---------------------------------------------
+    Each of these writes a list the journal never sees. `snoozeTab` closes the tab AND schedules it
+    in `zb_snoozed`: replaying the observed close as a `reopen` would bring the tab back while the
+    schedule still holds it, so it reopens a second time at wake. `archiveIdle` is the same shape
+    against `zb_archive`, over every idle tab in every window. `wakeSnoozed` and `restoreArchived`
+    create tabs AND consume the stored entry — closing the tab does not put the entry back.
+    `audioFocus` flips a persistent setting whose effect is future mutes on later activations, not
+    anything that happens inside the settle window. */
+    "browser.archiveIdle",
+    "browser.audioFocus",
+    "browser.restoreArchived",
+    "browser.snoozeTab",
+    "browser.wakeSnoozed",
 ];
 
 /// Every verb on the advertised surface, as the surface itself reports it.

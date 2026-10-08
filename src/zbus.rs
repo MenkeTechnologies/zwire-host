@@ -321,6 +321,13 @@ const SURFACE_VERBS: &[&str] = &[
     "browser.bookmarkFolder",
     "browser.removeBookmark",
     "browser.notify",
+    // tab flow (HUD ztabflow-core.js): snooze / auto-archive / recent-tab / audio focus
+    "browser.snoozeTab",
+    "browser.wakeSnoozed",
+    "browser.archiveIdle",
+    "browser.restoreArchived",
+    "browser.recentTab",
+    "browser.audioFocus",
     // terminal
     "browser.tmux",
     // transactional compensation (see `txn.rs`); `browser.undo` is executed by the HUD worker,
@@ -484,6 +491,9 @@ const REV: &[(&str, &str)] = &[
     ("browser.gotoTab", "inverse"),
     ("browser.nextTab", "inverse"),
     ("browser.prevTab", "inverse"),
+    // `recentTab` activates the most recently used other tab in the window: one `onActivated`,
+    // journaled as `activate` back to the tab that was active before.
+    ("browser.recentTab", "inverse"),
     /* ---- browser page: worker journals the prior url / zoom factor ---- */
     ("browser.open", "inverse"),
     ("browser.zoomIn", "inverse"),
