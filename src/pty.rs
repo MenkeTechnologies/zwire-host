@@ -26,7 +26,41 @@ fn default_shell() -> String {
     if cfg!(windows) {
         std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
     } else {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+        resolve_unix_shell()
+    }
+}
+
+/// First executable of `$SHELL`, the passwd-entry shell, `/bin/zsh`, `/bin/sh`. A GUI-launched
+/// host inherits `$SHELL` from launchd, which can name a binary that no longer exists.
+#[cfg(unix)]
+fn resolve_unix_shell() -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let is_executable = |p: &String| {
+        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    };
+    [std::env::var("SHELL").ok(), passwd_shell()]
+        .into_iter()
+        .flatten()
+        .chain(["/bin/zsh".to_string(), "/bin/sh".to_string()])
+        .find(is_executable)
+        .unwrap_or_else(|| "/bin/sh".into())
+}
+
+#[cfg(not(unix))]
+fn resolve_unix_shell() -> String {
+    unreachable!("default_shell takes the COMSPEC branch on windows")
+}
+
+#[cfg(unix)]
+fn passwd_shell() -> Option<String> {
+    // SAFETY: getpwuid returns a pointer to libc-owned storage (or null); the string is
+    // copied out before any further passwd call.
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() || (*pw).pw_shell.is_null() {
+            return None;
+        }
+        Some(std::ffi::CStr::from_ptr((*pw).pw_shell).to_string_lossy().into_owned())
     }
 }
 
@@ -155,5 +189,19 @@ impl Drop for PtySession {
         if let Some(h) = self.reader.take() {
             let _ = h.join();
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod shell_tests {
+    use super::*;
+
+    #[test]
+    fn dangling_shell_env_falls_back_to_an_executable() {
+        // SAFETY: the only test in this module touching the environment.
+        unsafe { std::env::set_var("SHELL", "/nonexistent/target/release/zshrs") };
+        let shell = default_shell();
+        assert_ne!(shell, "/nonexistent/target/release/zshrs");
+        assert!(std::path::Path::new(&shell).is_file(), "{shell} missing");
     }
 }

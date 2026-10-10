@@ -4196,6 +4196,7 @@ dependencies = [
  "filetime",
  "flate2",
  "interprocess",
+ "libc",
  "portable-pty",
  "serde",
  "serde_json",

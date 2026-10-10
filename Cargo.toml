@@ -78,6 +78,8 @@ tauri = { version = "2", optional = true, default-features = false }
 [target.'cfg(unix)'.dependencies]
 # Extended attributes for fs_xattrs — Unix-only.
 xattr = "1"
+# passwd-entry login shell for the pty default-shell fallback (pty_spawn).
+libc = "0.2"
 # REAL tmux (`tmux_*`, feature `ztmux`): the tmux client wire protocol over a Unix
 # domain socket. No Windows counterpart exists, so the dependency is Unix-only.
 ztmux-core = { version = "0.1.1", optional = true }
