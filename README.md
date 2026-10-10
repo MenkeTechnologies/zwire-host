@@ -423,7 +423,7 @@ fully-meshed topologies without loops.
 
 | Message | Reply / effect |
 |---|---|
-| `{"cmd":"pty_spawn","id"?,"rows":R,"cols":C,"shell"?,"args"?,"cwd"?,"env"?}` | spawn a shell; stream `{ev:"output","b64":…}` (and `pty:id` when keyed). |
+| `{"cmd":"pty_spawn","id"?,"rows":R,"cols":C,"shell"?,"args"?,"cwd"?,"env"?}` | spawn a shell (default: first executable of `$SHELL`, the passwd-entry shell, `/bin/zsh`, `/bin/sh`); stream `{ev:"output","b64":…}` (and `pty:id` when keyed). |
 | `{"cmd":"pty_write","id"?,"data"\|"b64":…}` | feed input. |
 | `{"cmd":"pty_resize","id"?,"rows":R,"cols":C}` / `{"cmd":"pty_kill","id"?}` | resize / kill; kill emits `{ev:"exit"}`. |
 
