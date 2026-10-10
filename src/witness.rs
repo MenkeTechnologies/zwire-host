@@ -1,7 +1,7 @@
 //! PREMISES: the facts a browser transaction was decided on, re-checked at commit.
 //!
-//! [`txn`](crate::txn) already gives a chain of browser-chrome mutations a commit/abort decision and
-//! journaled inverses, and [`page`](crate::page) already lets a chain test what the browser rendered
+//! [`txn`] already gives a chain of browser-chrome mutations a commit/abort decision and
+//! journaled inverses, and [`page`] already lets a chain test what the browser rendered
 //! *after* its steps ran (`page.assert`). Both look FORWARD. Neither closes the window that opens the
 //! moment a chain reads the page at all:
 //!
@@ -32,7 +32,7 @@
 //!
 //! * **By content** (no `op`) — the projection must be byte-identical at commit. The strictest form,
 //!   and the right one for "nothing about this table moved".
-//! * **By predicate** (`op` + `value`, the same vocabulary [`page::ASSERT_OPS`](crate::page::ASSERT_OPS)
+//! * **By predicate** (`op` + `value`, the same vocabulary [`page::ASSERT_OPS`]
 //!   uses) — the projection must still SATISFY the predicate. Survives an unrelated DOM tweak, which
 //!   is what "the cart still has at least one item" actually means.
 //!

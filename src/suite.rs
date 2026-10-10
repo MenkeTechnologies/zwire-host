@@ -1,6 +1,6 @@
 //! Suite bus CLIENT — the browser dialing the OTHER apps on the GUI Automation Bus.
 //!
-//! [`zbus`](crate::zbus) is the SERVER leg: it makes zwire reachable as `App::open("zwire")`, so a
+//! [`zbus`] is the SERVER leg: it makes zwire reachable as `App::open("zwire")`, so a
 //! stryke script (or another app) can drive the browser. This is the mirror leg — zwire reaching
 //! OUT. A page trigger, a ⌘K command, or a pane pipeline can name a verb on a *different* running
 //! MenkeTechnologies app and get its return value back into the browser.

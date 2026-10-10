@@ -1,7 +1,7 @@
 //! The RENDERED PAGE as typed, dialable state on the suite bus.
 //!
-//! [`zbus`](crate::zbus) makes the browser's *actions* reachable (`App::open("zwire")->call("browser.newTab")`)
-//! and [`suite`](crate::suite) lets the browser reach OUT to the other apps. Both move commands. This
+//! [`zbus`] makes the browser's *actions* reachable (`App::open("zwire")->call("browser.newTab")`)
+//! and [`suite`] lets the browser reach OUT to the other apps. Both move commands. This
 //! module moves DATA the other way: it turns whatever the browser is rendering right now — after the
 //! login, after the JavaScript, inside the session the user is actually in — into `state` any app on
 //! the bus can read with the same three frames it uses for any other app:
