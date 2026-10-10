@@ -256,9 +256,13 @@ mod tests {
     /// Every command answers a JSON object with an `ok` boolean — including on a
     /// machine with no tmux server, which is what CI is. A panic or a missing
     /// `ok` here would reach the browser as a dead ⌘K row.
+    ///
+    /// The writes run only when no server is reachable: `socket_path()` resolves
+    /// the developer's live server, and `tmux_import_state {}` unbinds every key
+    /// table on it, alongside `new-window`, `send-keys` and option/buffer writes.
     #[test]
     fn every_command_answers_ok_shaped_json_without_a_server() {
-        let reqs = [
+        let mut reqs = vec![
             json!({"cmd": "tmux_status"}),
             json!({"cmd": "tmux_tree"}),
             json!({"cmd": "tmux_sessions"}),
@@ -271,19 +275,23 @@ mod tests {
             json!({"cmd": "tmux_keys"}),
             json!({"cmd": "tmux_export_state"}),
             json!({"cmd": "tmux_capture", "pane": "%0"}),
-            json!({"cmd": "tmux_focus", "session": "s", "window": "0", "pane": "%0"}),
-            json!({"cmd": "tmux_send", "panes": ["%0"], "text": "ls", "enter": true}),
-            json!({"cmd": "tmux_sync", "window": "s:0", "on": true}),
-            json!({"cmd": "tmux_set_option", "scope": "server", "name": "escape-time", "value": "0"}),
-            json!({"cmd": "tmux_set_buffer", "name": "b", "content": "x"}),
-            json!({"cmd": "tmux_delete_buffer", "name": "b"}),
-            json!({"cmd": "tmux_paste_buffer", "name": "b", "pane": "%0"}),
-            json!({"cmd": "tmux_set_key", "table": "prefix", "key": "F", "command": "next-window"}),
-            json!({"cmd": "tmux_unbind_key", "table": "prefix", "key": "F"}),
-            json!({"cmd": "tmux_import_state", "state": {}}),
-            json!({"cmd": "tmux_run", "args": ["new-window"]}),
             json!({"cmd": "tmux_command", "args": ["list-sessions"]}),
         ];
+        if transport::socket_path().is_none() {
+            reqs.extend([
+                json!({"cmd": "tmux_focus", "session": "s", "window": "0", "pane": "%0"}),
+                json!({"cmd": "tmux_send", "panes": ["%0"], "text": "ls", "enter": true}),
+                json!({"cmd": "tmux_sync", "window": "s:0", "on": true}),
+                json!({"cmd": "tmux_set_option", "scope": "server", "name": "escape-time", "value": "0"}),
+                json!({"cmd": "tmux_set_buffer", "name": "b", "content": "x"}),
+                json!({"cmd": "tmux_delete_buffer", "name": "b"}),
+                json!({"cmd": "tmux_paste_buffer", "name": "b", "pane": "%0"}),
+                json!({"cmd": "tmux_set_key", "table": "prefix", "key": "F", "command": "next-window"}),
+                json!({"cmd": "tmux_unbind_key", "table": "prefix", "key": "F"}),
+                json!({"cmd": "tmux_import_state", "state": {}}),
+                json!({"cmd": "tmux_run", "args": ["new-window"]}),
+            ]);
+        }
         for req in reqs {
             let cmd = req["cmd"].as_str().unwrap();
             let reply = handle(cmd, &req);
