@@ -88,7 +88,7 @@ The daemon uses each platform's native local IPC — a **Unix domain socket** on
 macOS/Linux and a **named pipe** on Windows — so it runs everywhere your apps do:
 
 - **macOS / Linux** — `$ZWIRE_HOST_SOCK`, else `$XDG_RUNTIME_DIR/zwire-host.sock`,
-  else `~/.zwire/host.sock`. Created `0600` under a `0700` dir — owner-only,
+  else `$TMPDIR/zwire-host.sock`, else `/tmp/zwire-host-<user>.sock`. Created `0600` under a `0700` dir — owner-only,
   since it exposes `exec`/`fs`/`pty`.
 - **Windows** — `$ZWIRE_HOST_SOCK`, else the per-user pipe
   `\\.\pipe\zwire-host-<user>`. (`--socket <name>` overrides the pipe name.)
@@ -489,8 +489,8 @@ needed. `zwire-host call` is the portable path; or connect to the socket/pipe
 directly:
 
 ```sh
-# macOS / Linux — raw Unix socket
-printf '{"cmd":"sysinfo_once"}\n' | nc -U ~/.zwire/host.sock
+# macOS / Linux — raw Unix socket ($ZWIRE_HOST_SOCK = the daemon socket path)
+printf '{"cmd":"sysinfo_once"}\n' | nc -U "$ZWIRE_HOST_SOCK"
 # any platform — via the bundled client
 zwire-host call '{"cmd":"sysinfo_once"}'
 ```
