@@ -60,7 +60,11 @@ fn passwd_shell() -> Option<String> {
         if pw.is_null() || (*pw).pw_shell.is_null() {
             return None;
         }
-        Some(std::ffi::CStr::from_ptr((*pw).pw_shell).to_string_lossy().into_owned())
+        Some(
+            std::ffi::CStr::from_ptr((*pw).pw_shell)
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 }
 
