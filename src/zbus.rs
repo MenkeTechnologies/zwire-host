@@ -588,7 +588,7 @@ fn action_nonce() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     NONCE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
             Some(cur.max(ms) + 1)
         })
         .map_or(ms, |prev| prev.max(ms) + 1)
