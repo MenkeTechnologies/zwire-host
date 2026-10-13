@@ -461,6 +461,31 @@ pub fn write_palette(d: &Path, palette: &Value) -> Value {
     obj
 }
 
+/// Drop the stored resolved palette and its native-chrome projection.
+///
+/// A scheme written WITHOUT a palette (`zwire scheme X`, an app calling
+/// `api::theme_set_scheme`) leaves the PREVIOUS scheme's resolved colours in
+/// `[theme.palette]` and `hud-palette`, because only a rendered HUD page can
+/// resolve a palette and write it back. Consumers prefer a non-empty palette to
+/// the baked scheme table, so the stale one painted over the new scheme: the
+/// new-tab page and the native chrome kept the old colours.
+///
+/// A built-in scheme's palette IS its baked table, so an empty palette makes
+/// every consumer fall back to exactly the right colours. Returns `{}`.
+pub fn clear_palette(d: &Path) -> Value {
+    with_global_lock(d, || {
+        let mut root = load_global(d);
+        set_path(
+            &mut root,
+            &["theme", "palette"],
+            toml::Value::Table(Default::default()),
+        );
+        save_global(d, &root);
+    });
+    let _ = std::fs::remove_file(d.join("hud-palette"));
+    json!({})
+}
+
 /// The user's saved custom-scheme LIBRARY (`[theme.schemes]`, an ordered array of
 /// `{ name, vars }`), or an empty array when none. This is the shared home for every
 /// named custom colourscheme — so a scheme saved in one surface (the HUD settings)
@@ -600,5 +625,35 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&d2);
+    }
+
+    #[test]
+    fn clear_palette_drops_the_stale_palette_and_native_projection_but_keeps_scheme_and_ui() {
+        let d = std::env::temp_dir().join(format!("zwire-clrpal-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        write_scheme(&d, "cyberpunk");
+        write_ui(&d, &json!({ "light": true }));
+        write_palette(
+            &d,
+            &json!({ "--accent": "#ff2a6d", "--bg-primary": "#05050a", "--cyan": "#05d9e8",
+                     "--magenta": "#d300c5", "--border": "#1a1a3e", "--text": "#e0f0ff" }),
+        );
+        assert!(d.join("hud-palette").exists(), "projection written");
+
+        // `zwire scheme matrix` path: scheme changes, palette must not linger.
+        write_scheme(&d, "matrix");
+        assert_eq!(
+            current_palette(&d)["--accent"],
+            json!("#ff2a6d"),
+            "write_scheme alone leaves the old palette (the premise of the bug)"
+        );
+        assert_eq!(clear_palette(&d), json!({}));
+
+        assert_eq!(current_palette(&d), json!({}), "stored palette emptied");
+        assert!(!d.join("hud-palette").exists(), "native projection removed");
+        assert_eq!(current_scheme(&d), "matrix", "scheme preserved");
+        assert_eq!(current_ui(&d)["light"], json!(true), "ui preserved");
+
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

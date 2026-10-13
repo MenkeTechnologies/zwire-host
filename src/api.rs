@@ -197,6 +197,14 @@ pub fn theme_set_scheme(scheme: &str) {
     let data = json!({ "scheme": scheme });
     crate::bus::publish("scheme", &data);
     crate::peer::broadcast("scheme", &data);
+    // The previous scheme's resolved palette would otherwise paint over this
+    // one (see `store::clear_palette`); a custom scheme supplies its own.
+    if crate::store::SCHEMES.contains(&scheme) {
+        let p = crate::store::clear_palette(&d);
+        crate::theme_watch::note_palette(&p);
+        crate::bus::publish("palette", &p);
+        crate::peer::broadcast("palette", &p);
+    }
 }
 
 /// Merge a partial light/fx object (e.g. `{"light":true}`) into the shared ui and

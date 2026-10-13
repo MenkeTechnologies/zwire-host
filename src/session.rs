@@ -186,6 +186,14 @@ impl Session {
                 bus::publish("scheme", &data);
                 peer::broadcast("scheme", &data);
                 resp.insert("scheme".to_string(), Value::String(s.to_string()));
+                // A built-in scheme written without its own palette must not
+                // inherit the previous scheme's resolved colours.
+                if !has_palette && store::SCHEMES.contains(&s) {
+                    let p = store::clear_palette(&d);
+                    crate::theme_watch::note_palette(&p);
+                    bus::publish("palette", &p);
+                    peer::broadcast("palette", &p);
+                }
             } else {
                 resp.insert("ok".to_string(), Value::Bool(false));
                 resp.insert("err".to_string(), Value::String("bad_scheme".to_string()));
