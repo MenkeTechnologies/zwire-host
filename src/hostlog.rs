@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_BYTES: u64 = 768 * 1024; // trim the ring file past this
-const TRIM_KEEP: usize = 2000; // lines to keep when trimming
+const TRIM_KEEP: usize = 1000; // lines to keep when trimming (1000 x ~0.5 KB stays under MAX_BYTES)
+const SUMMARY_MAX: usize = 400; // bytes of a message kept in a log entry
 
 /// High-frequency internal plumbing that would drown the real commands: the
 /// theme-sync `get` poll (every ~1.5s per HUD page) and bus (un)subscribe
@@ -61,11 +62,7 @@ pub fn record(dir: &str, req: &Value, data: &Value) {
     {
         return;
     }
-    let mut summary = data.to_string();
-    if summary.len() > 400 {
-        summary.truncate(400);
-        summary.push('…');
-    }
+    let summary = summarize(data);
     let entry = json!({
         "t": now_ms(),
         "dir": dir,
@@ -91,17 +88,39 @@ pub fn record(dir: &str, req: &Value, data: &Value) {
     }
 }
 
+/// `data` as compact JSON, cut to at most `SUMMARY_MAX` bytes on a char boundary
+/// (a bare `truncate` panics mid-codepoint, and `panic = "abort"` kills the host).
+fn summarize(data: &Value) -> String {
+    let mut s = data.to_string();
+    if s.len() > SUMMARY_MAX {
+        let mut end = SUMMARY_MAX;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+        s.push('…');
+    }
+    s
+}
+
+/// The newest `n` lines of `data`, oldest first. Lines that are not valid UTF-8
+/// (a torn append racing a trim) are dropped instead of failing the whole read.
+fn newest_lines(data: &[u8], n: usize) -> Vec<&str> {
+    let lines: Vec<&str> = data
+        .split(|&b| b == b'\n')
+        .filter_map(|l| std::str::from_utf8(l).ok())
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(n)..].to_vec()
+}
+
 /// Keep only the newest `TRIM_KEEP` lines. Best-effort (tmp+rename); a rare race
 /// with a concurrent append can drop a line, which is fine for a monitor log.
 fn trim(path: &Path) {
-    let Ok(data) = std::fs::read_to_string(path) else {
+    let Ok(data) = std::fs::read(path) else {
         return;
     };
-    let lines: Vec<&str> = data.lines().collect();
-    if lines.len() <= TRIM_KEEP {
-        return;
-    }
-    let tail = lines[lines.len() - TRIM_KEEP..].join("\n");
+    let tail = newest_lines(&data, TRIM_KEEP).join("\n");
     let tmp = path.with_extension("jsonl.tmp");
     if std::fs::write(&tmp, format!("{tail}\n")).is_ok() {
         let _ = std::fs::rename(&tmp, path);
@@ -110,13 +129,43 @@ fn trim(path: &Path) {
 
 /// Return the newest `n` entries (oldest→newest) for the HOST tab.
 pub fn read_tail(n: usize) -> Vec<Value> {
-    let Ok(data) = std::fs::read_to_string(log_path()) else {
+    let Ok(data) = std::fs::read(log_path()) else {
         return Vec::new();
     };
-    let lines: Vec<&str> = data.lines().collect();
-    let start = lines.len().saturating_sub(n);
-    lines[start..]
+    newest_lines(&data, n)
         .iter()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summarize_cuts_on_char_boundary() {
+        // 2-byte chars straddling byte 400: a bare truncate(400) panics here.
+        let v = json!({ "m": format!("{}{}", "a".repeat(390), "é".repeat(20)) });
+        let s = summarize(&v);
+        assert!(s.ends_with('…'));
+        assert!(s.len() <= SUMMARY_MAX + '…'.len_utf8());
+    }
+
+    #[test]
+    fn summarize_keeps_short_messages_intact() {
+        let v = json!({ "m": "é" });
+        assert_eq!(summarize(&v), v.to_string());
+    }
+
+    #[test]
+    fn newest_lines_skips_torn_utf8_and_still_trims() {
+        let mut data = Vec::new();
+        for i in 0..5 {
+            data.extend_from_slice(format!("{{\"i\":{i}}}\n").as_bytes());
+        }
+        data.extend_from_slice(b"\",\"pid\":1}\xe9\n"); // torn fragment, invalid UTF-8
+        data.extend_from_slice(b"{\"i\":5}\n");
+        let got = newest_lines(&data, 3);
+        assert_eq!(got, vec![r#"{"i":3}"#, r#"{"i":4}"#, r#"{"i":5}"#]);
+    }
 }
