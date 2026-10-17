@@ -103,6 +103,8 @@ multiplex many in-flight requests, streams, and terminals over one connection.
 | Message | Reply / effect |
 |---|---|
 | `{"cmd":"hello"}` | `{ok,host,version,os,arch,pid,caps:[…]}` — feature-test the host. |
+| `{"cmd":"ping"}` | alias of `hello`. |
+| `{"cmd":"hostlog","limit"?:300}` | `{ok,log:[…]}` — tail of the shared request/response log (`~/.zwire/hostlog.jsonl`) that every host process appends to. |
 | `{"cmd":"hostinfo"}` | one-shot machine facts: os, arch, kernel, hostname, user, cpus, mem, LAN ip. |
 | `{"cmd":"get"}` | the shared theme: `{scheme, ui, palette, schemes}` — what every themed app reads. |
 | `{"cmd":"theme","scheme":"matrix"}` | write the shared theme (any of `scheme` / `ui` / `palette` / `schemes`): persisted, published to subscribers, broadcast to peers. Also accepted commandless (`{"scheme":"matrix"}`) — the command form is what a bus client, whose frames always name a verb, can reach. Writing a built-in `scheme` without a `palette` in the same message clears the stored `[theme.palette]` and `hud-palette` (and publishes an empty `palette`), so consumers fall back to the new scheme's baked table instead of the previous scheme's resolved colours. |
