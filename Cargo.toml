@@ -61,7 +61,7 @@ sha2 = "0.10"
 # Unified text diff for fs_diff (Myers / Patience).
 similar = "2"
 # Archive write (fs_compress) + read (fs_extract).
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
 # Cross-platform atime/mtime set for fs_touch.
